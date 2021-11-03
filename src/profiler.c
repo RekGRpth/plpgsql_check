@@ -851,7 +851,6 @@ profiler_stmt_walker(profiler_info *pinfo,
 					profiler_stmt_walker_options *opts)
 {
 	profiler_stmt *pstmt = NULL;
-	profiler_profile *profile = pinfo->profile;
 
 	bool	prepare_profile		= mode == PLPGSQL_CHECK_STMT_WALKER_PREPARE_PROFILE;
 	bool	count_exec_time		= mode == PLPGSQL_CHECK_STMT_WALKER_COUNT_EXEC_TIME;
@@ -869,7 +868,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 	List   *stmts;
 	ListCell   *lc;
 
-	Assert(profile);
+	Assert(pinfo->profile);
 
 	if (prepare_profile)
 	{
