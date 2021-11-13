@@ -852,10 +852,10 @@ profiler_stmt_walker(profiler_info *pinfo,
 {
 	profiler_stmt *pstmt = NULL;
 
-	bool	prepare_profile		= mode == PLPGSQL_CHECK_STMT_WALKER_PREPARE_PROFILE;
-	bool	count_exec_time		= mode == PLPGSQL_CHECK_STMT_WALKER_COUNT_EXEC_TIME;
-	bool	prepare_result		= mode == PLPGSQL_CHECK_STMT_WALKER_PREPARE_RESULT;
-	bool	collect_coverage	= mode == PLPGSQL_CHECK_STMT_WALKER_COLLECT_COVERAGE;
+	bool	prepare_profile_mode  = mode == PLPGSQL_CHECK_STMT_WALKER_PREPARE_PROFILE;
+	bool	count_exec_time_mode  = mode == PLPGSQL_CHECK_STMT_WALKER_COUNT_EXEC_TIME;
+	bool	prepare_result_mode	  = mode == PLPGSQL_CHECK_STMT_WALKER_PREPARE_RESULT;
+	bool	collect_coverage_mode = mode == PLPGSQL_CHECK_STMT_WALKER_COLLECT_COVERAGE;
 
 	int64	total_us_time = 0;
 	int64	nested_us_time = 0;
@@ -870,7 +870,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 
 	Assert(pinfo->profile);
 
-	if (prepare_profile)
+	if (prepare_profile_mode)
 	{
 		profile_register_stmt(pinfo, opts, stmt);
 	}
@@ -878,7 +878,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 	{
 		stmtid = STMTID(stmt);
 
-		if (count_exec_time)
+		if (count_exec_time_mode)
 		{
 			/*
 			 * Get statement info from function execution context
@@ -920,7 +920,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 			 */
 			ppstmt = get_stmt_profile_next(opts->pi);
 
-			if (prepare_result)
+			if (prepare_result_mode)
 			{
 				int parent_stmtid = parent_stmt ? ((int) STMTID(parent_stmt)) : -1;
 
@@ -940,7 +940,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 														(char *) plpgsql_check__stmt_typename_p(stmt));
 				}
 			}
-			else if (collect_coverage)
+			else if (collect_coverage_mode)
 			{
 				/* save statement exec count */
 				exec_count = ppstmt ? ppstmt->exec_count : 0;
@@ -963,7 +963,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 					 stmts, stmt, "loop body",
 					 opts);
 
-		if (collect_coverage)
+		if (collect_coverage_mode)
 			increment_branch_counter(opts->cs,
 									 opts->nested_exec_count);
 	}
@@ -984,11 +984,11 @@ profiler_stmt_walker(profiler_info *pinfo,
 					 stmt_if->then_body, stmt, "then body",
 					 opts);
 
-		if (count_exec_time)
+		if (count_exec_time_mode)
 		{
 			nested_us_time = opts->nested_us_time;
 		}
-		else if (collect_coverage)
+		else if (collect_coverage_mode)
 		{
 			increment_branch_counter(opts->cs,
 									 opts->nested_exec_count);
@@ -1006,10 +1006,10 @@ profiler_stmt_walker(profiler_info *pinfo,
 						 stmts, stmt, strbuf,
 						 opts);
 
-			if (count_exec_time)
+			if (count_exec_time_mode)
 				nested_us_time += opts->nested_us_time;
 
-			else if (collect_coverage)
+			else if (collect_coverage_mode)
 			{
 				increment_branch_counter(opts->cs,
 										 opts->nested_exec_count);
@@ -1024,17 +1024,17 @@ profiler_stmt_walker(profiler_info *pinfo,
 						 stmt_if->else_body, stmt, "else body",
 						 opts);
 
-			if (count_exec_time)
+			if (count_exec_time_mode)
 				nested_us_time += opts->nested_us_time;
 
-			else if (collect_coverage)
+			else if (collect_coverage_mode)
 				increment_branch_counter(opts->cs,
 										 opts->nested_exec_count);
 		}
 		else
 		{
 			/* calculate exec_count for implicit else path */
-			if (collect_coverage)
+			if (collect_coverage_mode)
 			{
 				int64 else_exec_count = exec_count - all_nested_branches_exec_count;
 
@@ -1057,10 +1057,10 @@ profiler_stmt_walker(profiler_info *pinfo,
 						 stmts, stmt, strbuf,
 						 opts);
 
-			if (count_exec_time)
+			if (count_exec_time_mode)
 				nested_us_time = opts->nested_us_time;
 
-			else if (collect_coverage)
+			else if (collect_coverage_mode)
 				increment_branch_counter(opts->cs,
 										 opts->nested_exec_count);
 		}
@@ -1069,10 +1069,10 @@ profiler_stmt_walker(profiler_info *pinfo,
 					 stmt_case->else_stmts, stmt, "case else",
 					 opts);
 
-		if (count_exec_time)
+		if (count_exec_time_mode)
 			nested_us_time = opts->nested_us_time;
 
-		else if (collect_coverage)
+		else if (collect_coverage_mode)
 			increment_branch_counter(opts->cs,
 									 opts->nested_exec_count);
 	}
@@ -1084,7 +1084,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 					 stmt_block->body, stmt, "body",
 					 opts);
 
-		if (count_exec_time)
+		if (count_exec_time_mode)
 			nested_us_time = opts->nested_us_time;
 
 		if (stmt_block->exceptions)
@@ -1099,13 +1099,13 @@ profiler_stmt_walker(profiler_info *pinfo,
 							 stmts, stmt, strbuf,
 							 opts);
 
-				if (count_exec_time)
+				if (count_exec_time_mode)
 					nested_us_time += opts->nested_us_time;
 			}
 		}
 	}
 
-	if (count_exec_time)
+	if (count_exec_time_mode)
 	{
 		Assert (pstmt);
 
@@ -1119,7 +1119,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 		if (pstmt->exec_count == 1 && pstmt->us_max == 1)
 			pstmt->us_max = pstmt->us_total;
 	}
-	else if (collect_coverage)
+	else if (collect_coverage_mode)
 	{
 		opts->nested_exec_count = exec_count;
 	}
@@ -2786,7 +2786,7 @@ plpgsql_check_profiler_func_init(PLpgSQL_execstate *estate, PLpgSQL_function *fu
 void
 plpgsql_check_profiler_func_end(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 {
-	profiler_info *pinfo = estate->plugin_info;
+	profiler_info *pinfo = (profiler_info *) estate->plugin_info;
 
 	if (plpgsql_check_tracer && pinfo )
 	{
@@ -2808,7 +2808,6 @@ plpgsql_check_profiler_func_end(PLpgSQL_execstate *estate, PLpgSQL_function *fun
 		pinfo && pinfo->profile &&
 		func->fn_oid != InvalidOid)
 	{
-		profiler_info *pinfo = (profiler_info *) estate->plugin_info;
 		int		entry_stmtid = STMTID(pinfo->function->action);
 
 		instr_time		end_time;
