@@ -24,6 +24,8 @@ static void check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, L
 static PLpgSQL_stmt_stack_item * push_stmt_to_stmt_stack(PLpgSQL_checkstate *cstate);
 static void pop_stmt_from_stmt_stack(PLpgSQL_checkstate *cstate);
 static bool is_any_loop_stmt(PLpgSQL_stmt *stmt);
+static bool is_inside_protected_block(PLpgSQL_stmt_stack_item *current);
+static bool is_inside_exception_handler(PLpgSQL_stmt_stack_item *current);
 static PLpgSQL_stmt * find_nearest_loop(PLpgSQL_stmt_stack_item *current);
 static PLpgSQL_stmt * find_stmt_with_label(char *label, PLpgSQL_stmt_stack_item *current);
 static int possibly_closed(int c);
@@ -284,6 +286,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						List   *exceptions_local = NIL;
 						int		closing_handlers = PLPGSQL_CHECK_UNKNOWN;
 						List   *exceptions_transformed = NIL;
+
+						cstate->top_stmt_stack->is_exception_handler = true;
 
 						if (*closing == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
 						{
@@ -1222,6 +1226,14 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 						plpgsql_check_target(cstate, diag_item->target, NULL, NULL);
 					}
+
+					if (stmt_getdiag->is_stacked &&
+						!is_inside_exception_handler(outer_stmt))
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_STACKED_DIAGNOSTICS_ACCESSED_WITHOUT_ACTIVE_HANDLER),
+								  errmsg("GET STACKED DIAGNOSTICS cannot be used outside an exception handler")));
+					}
 				}
 				break;
 
@@ -1278,6 +1290,18 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
 							 errmsg("invalid transaction termination")));
+
+				if (is_inside_protected_block(outer_stmt))
+				{
+					if (stmt->cmd_type == PLPGSQL_STMT_COMMIT)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
+								 errmsg("cannot commit while a subtransaction is active")));
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
+								 errmsg("cannot roll back while a subtransaction is active")));
+				}
 				break;
 
 			case PLPGSQL_STMT_CALL:
@@ -1562,6 +1586,51 @@ find_nearest_loop(PLpgSQL_stmt_stack_item *current)
 	}
 
 	return NULL;
+}
+
+/*
+ * Returns true, when some outer block handles exceptions.
+ * It is used for check of correct usage of COMMIT or ROLLBACK.
+ */
+static bool
+is_inside_protected_block(PLpgSQL_stmt_stack_item *current)
+{
+	while (current != NULL)
+	{
+		if (current->stmt->cmd_type == PLPGSQL_STMT_BLOCK)
+		{
+			PLpgSQL_stmt_block *stmt_block = (PLpgSQL_stmt_block *) current->stmt;
+
+			if (stmt_block->exceptions && !current->is_exception_handler)
+				return true;
+		}
+
+		current = current->outer;
+	}
+
+	return false;
+}
+
+/*
+ * This is used for check of correct usage GET STACKED DIAGNOSTICS
+ */
+static bool
+is_inside_exception_handler(PLpgSQL_stmt_stack_item *current)
+{
+	while (current != NULL)
+	{
+		if (current->stmt->cmd_type == PLPGSQL_STMT_BLOCK)
+		{
+			PLpgSQL_stmt_block *stmt_block = (PLpgSQL_stmt_block *) current->stmt;
+
+			if (stmt_block->exceptions && current->is_exception_handler)
+				return true;
+		}
+
+		current = current->outer;
+	}
+
+	return false;
 }
 
 /*
