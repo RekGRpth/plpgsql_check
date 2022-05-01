@@ -24,7 +24,6 @@ static void check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, L
 static PLpgSQL_stmt_stack_item * push_stmt_to_stmt_stack(PLpgSQL_checkstate *cstate);
 static void pop_stmt_from_stmt_stack(PLpgSQL_checkstate *cstate);
 static bool is_any_loop_stmt(PLpgSQL_stmt *stmt);
-static bool is_inside_protected_block(PLpgSQL_stmt_stack_item *current);
 static bool is_inside_exception_handler(PLpgSQL_stmt_stack_item *current);
 static PLpgSQL_stmt * find_nearest_loop(PLpgSQL_stmt_stack_item *current);
 static PLpgSQL_stmt * find_stmt_with_label(char *label, PLpgSQL_stmt_stack_item *current);
@@ -40,6 +39,12 @@ static void check_dynamic_sql(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, PL
 #else
 
 static void check_dynamic_sql(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, PLpgSQL_expr *query, bool into, PLpgSQL_row *row, PLpgSQL_rec *rec, List *params);
+
+#endif
+
+#if PG_VERSION_NUM >= 110000
+
+static bool is_inside_protected_block(PLpgSQL_stmt_stack_item *current);
 
 #endif
 
@@ -1210,6 +1215,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						plpgsql_check_expr(cstate, (PLpgSQL_expr *) lfirst(l));
 					}
 
+					plpgsql_check_target(cstate, stmt_open->curvar, NULL, NULL);
+
 					cstate->modif_variables = bms_add_member(cstate->modif_variables,
 									 stmt_open->curvar);
 				}
@@ -1321,6 +1328,7 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					if (target != NULL)
 					{
 						check_variable(cstate, (PLpgSQL_variable *) target);
+
 						plpgsql_check_assignment_to_variable(cstate, stmt_call->expr,
 																(PLpgSQL_variable *) target, -1);
 
@@ -1588,6 +1596,8 @@ find_nearest_loop(PLpgSQL_stmt_stack_item *current)
 	return NULL;
 }
 
+#if PG_VERSION_NUM >= 110000
+
 /*
  * Returns true, when some outer block handles exceptions.
  * It is used for check of correct usage of COMMIT or ROLLBACK.
@@ -1610,6 +1620,8 @@ is_inside_protected_block(PLpgSQL_stmt_stack_item *current)
 
 	return false;
 }
+
+#endif
 
 /*
  * This is used for check of correct usage GET STACKED DIAGNOSTICS
