@@ -1,5 +1,5 @@
-%global pgmajorversion 10
-%global pginstdir /usr/pgsql-10
+%global pgmajorversion 15
+%global pginstdir /usr/pgsql-15
 %global sname plpgsql_check
 
 Name:		%{sname}_%{pgmajorversion}
@@ -24,6 +24,7 @@ a performance issues.
 
 %prep
 %setup -q -n %{sname}-%{version}
+
 
 %build
 PATH="%{pginstdir}/bin;$PATH" ; export PATH
