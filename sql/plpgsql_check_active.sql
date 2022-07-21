@@ -2492,12 +2492,26 @@ begin
 end;
 $$ language plpgsql;
 
+create type record03 as (a int, b int);
+
+create or replace function rrecord03()
+returns record03 as $$
+declare r record := row(1);
+begin
+  return r;
+end;
+$$ language plpgsql;
+
 -- should not to raise false alarms
 select * from plpgsql_check_function('rrecord01');
 select * from plpgsql_check_function('rrecord02');
+-- should detect different return but still detect return
+select * from plpgsql_check_function('rrecord03', fatal_errors => false);
 
 drop function rrecord01();
 drop function rrecord02();
+drop function rrecord03();
+drop type record03;
 
 create or replace function bugfunc01()
 returns void as $$
@@ -4757,3 +4771,60 @@ end
 $$ language plpgsql;
 
 select * from plpgsql_check_function('test_function');
+
+drop function test_function();
+
+load 'plpgsql_check';
+
+drop type testtype cascade;
+
+create type testtype as (a int, b int);
+
+create function test_function()
+returns record as $$
+declare r record;
+begin
+  r := (10,20);
+  if false then
+    return r;
+  end if;
+
+  return null;
+end;
+$$ language plpgsql;
+
+create function test_function33()
+returns record as $$
+declare r testtype;
+begin
+  r := (10,20);
+  if false then
+    return r;
+  end if;
+
+  return null;
+end;
+$$ language plpgsql;
+
+-- should not to raise false alarm due check against fake result type
+select plpgsql_check_function('test_function');
+select plpgsql_check_function('test_function33');
+
+-- try to check in passive mode
+set plpgsql_check.mode = 'every_start';
+select test_function();
+select test_function33();
+
+select * from test_function() as (a int, b int);
+select * from test_function33() as (a int, b int);
+
+-- should to identify error
+select * from test_function() as (a int, b int, c int);
+select * from test_function33() as (a int, b int, c int);
+
+drop function test_function();
+drop function test_function33();
+
+drop type testtype;
+
+set plpgsql_check.mode = 'disabled';

@@ -829,6 +829,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 				{
 					PLpgSQL_stmt_return *stmt_rt = (PLpgSQL_stmt_return *) stmt;
 
+					*closing = PLPGSQL_CHECK_CLOSED;
+
 					if (stmt_rt->retvarno >= 0)
 					{
 						PLpgSQL_datum *retvar = cstate->estate->datums[stmt_rt->retvarno];
@@ -852,7 +854,10 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 								{
 									PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
 
-									if (recvar_tupdesc(rec) && estate->rsi && IsA(estate->rsi, ReturnSetInfo))
+									/* don't do next check, when result tuple desc is fake */
+									if (recvar_tupdesc(rec) &&
+										!cstate->fake_rtd &&
+										estate->rsi && IsA(estate->rsi, ReturnSetInfo))
 									{
 										TupleDesc	rettupdesc = estate->rsi->expectedDesc;
 										TupleConversionMap *tupmap ;
@@ -870,7 +875,9 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 								{
 									PLpgSQL_row *row = (PLpgSQL_row *) retvar;
 
-									if (row->rowtupdesc && estate->rsi && IsA(estate->rsi, ReturnSetInfo))
+									if (row->rowtupdesc &&
+										!cstate->fake_rtd &&
+										estate->rsi && IsA(estate->rsi, ReturnSetInfo))
 									{
 										TupleDesc	rettupdesc = estate->rsi->expectedDesc;
 										TupleConversionMap *tupmap ;
@@ -888,8 +895,6 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 								;		/* nope */
 						}
 					}
-
-					*closing = PLPGSQL_CHECK_CLOSED;
 
 					if (stmt_rt->expr)
 						plpgsql_check_returned_expr(cstate, stmt_rt->expr, true);
