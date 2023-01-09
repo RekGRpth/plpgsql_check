@@ -162,6 +162,9 @@ You can set level of warnings via function's parameters:
 * `security_warnings boolean DEFAULT false` - security related checks like SQL injection
   vulnerability detection
 
+* `compatibility_warnings boolean DEFAULT false` - compatibility related checks like obsolete explicit
+  setting internal cursor names in refcursor's or cursor's variables.
+
 * `anyelementtype regtype DEFAULT 'int'` - an actual type to be used when testing the anyelement type
 
 * `anyenumtype regtype DEFAULT '-'` - an actual type to be used when testing the anyenum type
@@ -329,6 +332,64 @@ You can enable passive mode by
     set plpgsql_check.mode = 'every_start';  -- This scans all code before it is executed
 
     SELECT fx(10); -- run functions - function is checked before runtime starts it
+
+# Compatibility warnings
+
+## Assigning string to refcursor variable
+
+PostgreSQL cursor's and refcursor's variables are enhaced string variables that holds
+unique name of related portal (internal structure of Postgres that is used for cursor's
+implementation). Until PostgreSQL 16, the the portal had same name like name of cursor
+variable. PostgreSQL 16 and higher change this mechanism and by default related portal
+will be named by some unique name. It solves some issues with cursors in nested blocks
+or when cursor is used in recursive called function.
+
+With mentioned change, the refcursor's variable should to take value from another
+refcursor variable or from some cursor varible (when cursor is opened).
+
+    -- obsolete pattern
+    DECLARE
+      cur CURSOR FOR SELECT 1;
+      rcur refcursor;
+    BEGIN
+      rcur := 'cur';
+      OPEN cur;
+      ...
+
+    -- new pattern
+    DECLARE
+      cur CURSOR FOR SELECT 1;
+      rcur refcursor;
+    BEGIN
+      OPEN cur;
+      rcur := cur;
+      ...
+
+When `compatibility_warnings` flag is active, then `plpgsql_check` try to identify
+some fishy assigning to refcursor's variable or returning of refcursor's values:
+
+    CREATE OR REPLACE FUNCTION public.foo()
+     RETURNS refcursor
+    AS $$
+    declare
+       c cursor for select 1;
+       r refcursor;
+    begin
+      open c;
+      r := 'c';
+      return r;
+    end;
+    $$ LANGUAGE plpgsql;
+
+    select * from plpgsql_check_function('foo', extra_warnings =>false, compatibility_warnings => true);
+    ┌───────────────────────────────────────────────────────────────────────────────────┐
+    │                              plpgsql_check_function                               │
+    ╞═══════════════════════════════════════════════════════════════════════════════════╡
+    │ compatibility:00000:6:assignment:obsolete setting of refcursor or cursor variable │
+    │ Detail: Internal name of cursor should not be specified by users.                 │
+    │ Context: at assignment to variable "r" declared on line 3                         │
+    └───────────────────────────────────────────────────────────────────────────────────┘
+    (3 rows)
 
 # Limits
 
@@ -787,6 +848,11 @@ Shorter syntax for pragma is supported too:
 * `table: name (column_name type, ...)` or `table: name (like tablename)` - create ephemeral temporary table (if you want to specify schema, then only `pg_temp` schema is allowed.
 
 Pragmas `enable:tracer` and `disable:tracer`are active for Postgres 12 and higher
+
+# Update
+
+plpgsql_check doesn't support update (of plpgsql_check). You should to drop this
+before install new version of this extension.
 
 # Compilation
 

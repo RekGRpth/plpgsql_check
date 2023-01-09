@@ -834,6 +834,38 @@ plpgsql_check_returned_expr(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, bool
 		tupdesc = plpgsql_check_expr_get_desc(cstate, expr, false, true, is_expression, &first_level_typ);
 		is_immutable_null = is_const_null_expr(cstate, expr);
 
+		/* try to identify obsolete return refcursor's value */
+		if (cstate->estate->func->fn_rettype == REFCURSOROID &&
+			cstate->cinfo->compatibility_warnings)
+		{
+			Node	   *node = plpgsql_check_expr_get_node(cstate, expr, false);
+			bool		is_ok = true;
+
+			if (IsA((Node *) node, Const))
+			{
+				/* only NULL constant argument is ok */
+				if (!((Const *) node)->constisnull)
+					is_ok = false;
+			}
+			else if (IsA((Node *) node, Param))
+			{
+				/* only variable of refcursor is ok */
+				if (((Param *) node)->paramtype != REFCURSOROID)
+					is_ok = false;
+			}
+			else
+				is_ok = false;
+
+			if (!is_ok)
+				plpgsql_check_put_error(cstate,
+										0, 0,
+										"obsolete setting of refcursor or cursor variable",
+										"Internal name of cursor should not be specified by users.",
+										NULL,
+										PLPGSQL_CHECK_WARNING_COMPATIBILITY,
+										0, NULL, NULL);
+		}
+
 		if (tupdesc)
 		{
 			/* enforce check for trigger function - result must be composit */
@@ -1105,6 +1137,57 @@ plpgsql_check_expr_as_rvalue(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr,
 
 		tupdesc = plpgsql_check_expr_get_desc(cstate, expr, use_element_type, expand, is_expression, &first_level_typoid);
 		is_immutable_null = is_const_null_expr(cstate, expr);
+
+		/* try to identify obsolete setting of refcursor's variables */
+		if (cstate->cinfo->compatibility_warnings && targetdno != -1)
+		{
+			PLpgSQL_var *var = (PLpgSQL_var *) cstate->estate->datums[targetdno];
+			bool		is_ok = true;
+
+			if (var->dtype == PLPGSQL_DTYPE_VAR && var->datatype->typoid == REFCURSOROID)
+			{
+				Node *node = plpgsql_check_expr_get_node(cstate, expr, false);
+				bool		is_declare_cursor;
+
+				is_declare_cursor = cstate->estate->err_stmt &&
+									cstate->estate->err_stmt->cmd_type == PLPGSQL_STMT_BLOCK &&
+									var->cursor_explicit_expr;
+
+				if (IsA((Node *) node, Const))
+				{
+					/* only NULL constant argument is ok */
+					if (!((Const *) node)->constisnull)
+						is_ok = false;
+				}
+				else if (IsA((Node *) node, Param))
+				{
+					/* only variable of refcursor is ok */
+					if (((Param *) node)->paramtype != REFCURSOROID)
+						is_ok = false;
+				}
+				else
+					is_ok = false;
+
+				/*
+				 * when the assignment is still ok, check an immutability of bound cursor
+				 */
+				if (is_ok && var->cursor_explicit_expr)
+				{
+					if (!is_immutable_null)
+						is_ok = false;
+				}
+
+				/* Don't raise warnings for old DECLARE CURSOR AS stmts */
+				if (!is_ok && !is_declare_cursor)
+					plpgsql_check_put_error(cstate,
+											0, 0,
+											"obsolete setting of refcursor or cursor variable",
+											"Internal name of cursor should not be specified by users.",
+											NULL,
+											PLPGSQL_CHECK_WARNING_COMPATIBILITY,
+											0, NULL, NULL);
+			}
+		}
 
 		/* try to detect safe variables */
 		if (cstate->cinfo->security_warnings && targetdno != -1)
