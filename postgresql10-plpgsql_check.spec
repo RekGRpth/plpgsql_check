@@ -3,7 +3,7 @@
 %global sname plpgsql_check
 
 Name:		%{sname}_%{pgmajorversion}
-Version:	2.1.1
+Version:	2.3.3
 Release:	1%{?dist}
 Summary:	Additional tools for plpgsql functions validation
 
@@ -28,12 +28,11 @@ a performance issues.
 %build
 PATH="%{pginstdir}/bin;$PATH" ; export PATH
 CFLAGS="${CFLAGS:-%optflags}" ; export CFLAGS
-
-USE_PGXS=1 make %{?_smp_mflags}
+make USE_PGXS=1 PG_CONFIG=%{pginstdir}/bin/pg_config %{?_smp_mflags}
 
 %install
 rm -rf %{buildroot}
-make USE_PGXS=1 DESTDIR=%{buildroot} install
+make install DESTDIR=%{buildroot} PG_CONFIG=%{pginstdir}/bin/pg_config %{?_smp_mflags}
 
 %clean
 rm -rf %{buildroot}
@@ -42,10 +41,19 @@ rm -rf %{buildroot}
 %defattr(644,root,root,755)
 %doc README.md
 %{pginstdir}/lib/plpgsql_check.so
-%{pginstdir}/share/extension/plpgsql_check--2.0.sql
+%{pginstdir}/share/extension/plpgsql_check--2.1.sql
 %{pginstdir}/share/extension/plpgsql_check.control
+%{pginstdir}/lib/bitcode/*.bc
+%{pginstdir}/lib/bitcode/plpgsql_check/src/*.bc
+%{pginstdir}/share/extension/*.control
 
 %changelog
+* Wed Jan 11 2023 - Pavel Stehule <pavel.stehule@gmail.com> 2.3.0
+- possibility to detect compatibility issues (obsolete setting of refcursor)
+
+* Tue Sep 20 2022 - Pavel Stehule <pavel.stehule@gmail.com> 2.2.0
+- possibility to use in comment options
+
 * Wed Dec 29 2021 - Pavel Stehule <pavel.stehule@gmail.com> 2.1.0
 - possibility to count statement's aborted execution
 - possibility to count "unfinished" statements due exception
@@ -113,7 +121,7 @@ rm -rf %{buildroot}
 - better check of dynamic SQL when it is const string
 - check of SQL injection vulnerability of stmt expression at EXECUTE stmt
 
-* Fri Dec 23 2018 - Pavel STEHULE <pavel.stehule@gmail.com> 1.4.2-1
+* Sun Dec 23 2018 - Pavel STEHULE <pavel.stehule@gmail.com> 1.4.2-1
 - metada fix
 
 * Fri Dec 21 2018 - Pavel STEHULE <pavel.stehule@gmail.com> 1.4.1-1
@@ -137,7 +145,7 @@ rm -rf %{buildroot}
 - fix some bugs and false alarms
 - PostgreSQL 11 support
 
-* Fri Now 11 2016 - Pavel STEHULE <pavel.stehule@gmail.com> 1.2.0-1
+* Fri Nov 11 2016 - Pavel STEHULE <pavel.stehule@gmail.com> 1.2.0-1
 - support extra warnings - shadowed variables
 
 * Thu Aug 25 2016 - Pavel STEHULE <pavel.stehule@gmail.com> 1.0.5-1

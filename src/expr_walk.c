@@ -4,7 +4,7 @@
  *
  *			  set of Query/Expr walkers
  *
- * by Pavel Stehule 2013-2021
+ * by Pavel Stehule 2013-2023
  *
  *-------------------------------------------------------------------------
  */
@@ -28,9 +28,6 @@ typedef struct
 	char *query_str;
 } check_funcexpr_walker_params;
 
-typedef bool (*check_function_callback) (Oid func_id, void *context);
-
-
 static int check_fmt_string(const char *fmt,
 							List *args,
 							int location,
@@ -40,7 +37,7 @@ static int check_fmt_string(const char *fmt,
 							bool no_error);
 
 /*
- * Send to ouput all not yet displayed relations and functions.
+ * Send to ouput all not yet displayed relations, operators and functions.
  */
 static bool
 detect_dependency_walker(Node *node, void *context)
@@ -76,6 +73,17 @@ detect_dependency_walker(Node *node, void *context)
 			}
 		}
 
+#if PG_VERSION_NUM >= 110000
+
+		if (query->utilityStmt && IsA(query->utilityStmt, CallStmt))
+		{
+			CallStmt *callstmt = (CallStmt *) query->utilityStmt;
+
+			detect_dependency_walker((Node *) callstmt->funcexpr, context);
+		}
+
+#endif
+
 		return query_tree_walker((Query *) node,
 								 detect_dependency_walker,
 								 context, 0);
@@ -93,6 +101,12 @@ detect_dependency_walker(Node *node, void *context)
 				ListCell		   *lc;
 				int		i = 0;
 
+#if PG_VERSION_NUM >= 110000
+
+				char		prokind = get_func_prokind(fexpr->funcid);
+
+#endif
+
 				initStringInfo(&str);
 				appendStringInfoChar(&str, '(');
 				foreach(lc, fexpr->args)
@@ -106,6 +120,17 @@ detect_dependency_walker(Node *node, void *context)
 				}
 				appendStringInfoChar(&str, ')');
 
+#if PG_VERSION_NUM >= 110000
+
+				plpgsql_check_put_dependency(ri,
+											  prokind == PROKIND_PROCEDURE ? "PROCEDURE" : "FUNCTION",
+											  fexpr->funcid,
+											  get_namespace_name(get_func_namespace(fexpr->funcid)),
+											  get_func_name(fexpr->funcid),
+											  str.data);
+
+#else
+
 				plpgsql_check_put_dependency(ri,
 											  "FUNCTION",
 											  fexpr->funcid,
@@ -113,10 +138,47 @@ detect_dependency_walker(Node *node, void *context)
 											  get_func_name(fexpr->funcid),
 											  str.data);
 
+#endif
+
 				pfree(str.data);
 
 				cstate->func_oids = bms_add_member(cstate->func_oids, fexpr->funcid);
 			}
+		}
+	}
+
+	if (IsA(node, OpExpr))
+	{
+		OpExpr *opexpr = (OpExpr *) node;
+
+		if (plpgsql_check_get_op_namespace(opexpr->opno) != PG_CATALOG_NAMESPACE)
+		{
+				StringInfoData		str;
+				Oid					lefttype;
+				Oid					righttype;
+
+				op_input_types(opexpr->opno, &lefttype, &righttype);
+
+				initStringInfo(&str);
+				appendStringInfoChar(&str, '(');
+				if (lefttype != InvalidOid)
+					appendStringInfoString(&str, format_type_be(lefttype));
+				else
+					appendStringInfoChar(&str, '-');
+				appendStringInfoChar(&str, ',');
+				if (righttype != InvalidOid)
+					appendStringInfoString(&str, format_type_be(righttype));
+				else
+					appendStringInfoChar(&str, '-');
+				appendStringInfoChar(&str, ')');
+
+				plpgsql_check_put_dependency(ri,
+											 "OPERATOR",
+											 opexpr->opno,
+											 get_namespace_name(plpgsql_check_get_op_namespace(opexpr->opno)),
+											 get_opname(opexpr->opno),
+											 str.data);
+				pfree(str.data);
 		}
 	}
 
@@ -996,11 +1058,15 @@ contain_mutable_functions_walker(Node *node, void *context)
 								context))
 		return true;
 
+#if PG_VERSION_NUM < 160000
+
 	if (IsA(node, SQLValueFunction))
 	{
 		/* all variants of SQLValueFunction are stable */
 		return true;
 	}
+
+#endif
 
 	if (IsA(node, NextValueExpr))
 	{

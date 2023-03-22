@@ -372,3 +372,56 @@ $$ language plpgsql;
 
 -- should be ok
 select * from plpgsql_check_function('f1');
+
+drop function f1();
+
+-- do not raise false warning
+create or replace function test_function()
+returns text as $$
+declare s text;
+begin
+  get diagnostics s = PG_CONTEXT;
+  return s;
+end;
+$$ language plpgsql;
+
+create or replace procedure test_procedure()
+as $$
+begin
+  null;
+end;
+$$ language plpgsql;
+
+-- should be without any warnings
+select * from plpgsql_check_function('test_function', performance_warnings=>true);
+select * from plpgsql_check_function('test_procedure', performance_warnings=>true);
+
+drop function test_function();
+drop procedure test_procedure();
+
+-- detect dependecy in CALL statement
+create or replace function fx1_dep(int)
+returns int as $$
+begin
+  return $1;
+end;
+$$ language plpgsql;
+
+create or replace procedure px1_dep(int)
+as $$
+begin
+end;
+$$ language plpgsql;
+
+create or replace function test_function()
+returns void as $$
+begin
+  call px1_dep(fx1_dep(10));
+end;
+$$ language plpgsql;
+
+select type, schema, name, params from plpgsql_show_dependency_tb('test_function');
+
+drop function test_function();
+drop procedure px1_dep();
+drop function fx1_dep(int);

@@ -4,7 +4,7 @@
  *
  *			  tracer related code
  *
- * by Pavel Stehule 2013-2021
+ * by Pavel Stehule 2013-2023
  *
  *-------------------------------------------------------------------------
  */
@@ -1311,9 +1311,6 @@ plpgsql_check_tracer_on_stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 			int				retvarno = -1;
 			bool	is_assignment = false;
 			bool	is_perform = false;
-#if PG_VERSION_NUM >= 120000
-			instr_time *stmt_start_time;
-#endif
 
 			switch (stmt->cmd_type)
 			{
@@ -1383,6 +1380,8 @@ plpgsql_check_tracer_on_stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 			}
 
 #if PG_VERSION_NUM >= 120000
+
+			instr_time *stmt_start_time;
 
 			plpgsql_check_get_trace_stmt_info(estate, stmt->stmtid - 1, &stmt_start_time);
 

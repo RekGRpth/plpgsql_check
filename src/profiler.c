@@ -4,7 +4,7 @@
  *
  *			  profiler accessories code
  *
- * by Pavel Stehule 2013-2021
+ * by Pavel Stehule 2013-2023
  *
  *-------------------------------------------------------------------------
  */
@@ -222,6 +222,8 @@ typedef struct profiler_info
 
 #endif
 
+	void	   *prev_plugin_info;
+
 } profiler_info;
 
 typedef struct profiler_iterator
@@ -298,7 +300,7 @@ static MemoryContext profiler_queryid_mcxt = NULL;
 static profiler_stack *top_pinfo = NULL;
 static ExprContext *curr_eval_econtext = NULL;
 
-bool plpgsql_check_profiler = true;
+bool plpgsql_check_profiler = false;
 
 needs_fmgr_hook_type	plpgsql_check_next_needs_fmgr_hook = NULL;
 fmgr_hook_type			plpgsql_check_next_fmgr_hook = NULL;
@@ -607,6 +609,28 @@ plpgsql_check_shmem_size(void)
 }
 
 /*
+ * Request additional shared memory resources.
+ *
+ * If you change code here, don't forget to also report the modifications in
+ * _PG_init() for pg14 and below.
+ */
+#if PG_VERSION_NUM >= 150000
+
+void
+plpgsql_check_profiler_shmem_request(void)
+{
+	if (prev_shmem_request_hook)
+		prev_shmem_request_hook();
+
+	RequestAddinShmemSpace(plpgsql_check_shmem_size());
+
+	RequestNamedLWLockTranche("plpgsql_check profiler", 1);
+	RequestNamedLWLockTranche("plpgsql_check fstats", 1);
+}
+
+#endif
+
+/*
  * Initialize shared memory used like permanent profile storage.
  * No other parts use shared memory, so this code is completly here.
  *
@@ -898,6 +922,12 @@ profiler_stmt_walker(profiler_info *pinfo,
 {
 	profiler_stmt *pstmt = NULL;
 
+#ifdef USE_ASSERT_CHECKING
+
+	profiler_profile *profile = pinfo->profile;
+
+#endif
+
 	bool	prepare_profile_mode  = mode == PLPGSQL_CHECK_STMT_WALKER_PREPARE_PROFILE;
 	bool	count_exec_time_mode  = mode == PLPGSQL_CHECK_STMT_WALKER_COUNT_EXEC_TIME;
 	bool	prepare_result_mode	  = mode == PLPGSQL_CHECK_STMT_WALKER_PREPARE_RESULT;
@@ -914,7 +944,7 @@ profiler_stmt_walker(profiler_info *pinfo,
 	List   *stmts;
 	ListCell   *lc;
 
-	Assert(pinfo->profile);
+	Assert(profile);
 
 	if (prepare_profile_mode)
 	{
@@ -1315,11 +1345,7 @@ coverage_internal(Oid fnoid, int coverage_type)
 	if (!HeapTupleIsValid(cinfo.proctuple))
 		elog(ERROR, "cache lookup failed for function %u", cinfo.fn_oid);
 
-	plpgsql_check_get_function_info(cinfo.proctuple,
-									&cinfo.rettype,
-									&cinfo.volatility,
-									&cinfo.trigtype,
-									&cinfo.is_procedure);
+	plpgsql_check_get_function_info(&cinfo);
 
 	plpgsql_check_precheck_conditions(&cinfo);
 
@@ -1999,6 +2025,9 @@ profiler_get_expr(PLpgSQL_stmt *stmt, bool *dynamic, List **params)
 		case PLPGSQL_STMT_FORC:
 			expr = ((PLpgSQL_stmt_forc *) stmt)->argquery;
 			break;
+		case PLPGSQL_STMT_FORS:
+			expr = ((PLpgSQL_stmt_fors *) stmt)->query;
+			break;
 		case PLPGSQL_STMT_DYNFORS:
 			expr = ((PLpgSQL_stmt_dynfors *) stmt)->query;
 			*params = ((PLpgSQL_stmt_dynfors *) stmt)->params;
@@ -2061,7 +2090,6 @@ profiler_get_expr(PLpgSQL_stmt *stmt, bool *dynamic, List **params)
 					expr = o->argquery;
 			}
 		case PLPGSQL_STMT_BLOCK:
-		case PLPGSQL_STMT_FORS:
 
 #if PG_VERSION_NUM >= 110000
 
@@ -2159,7 +2187,7 @@ profiler_get_dyn_queryid(PLpgSQL_execstate *estate, PLpgSQL_expr *expr, query_pa
 		snapshot_set = true;
 	}
 
-	query = parse_analyze(parsetree, query_string, paramtypes, nparams, NULL);
+	query = parse_analyze_fixedparams(parsetree, query_string, paramtypes, nparams, NULL);
 
 	if (snapshot_set)
 		PopActiveSnapshot();
@@ -2782,6 +2810,39 @@ plpgsql_check_profiler_func_init(PLpgSQL_execstate *estate, PLpgSQL_function *fu
 {
 	profiler_info *pinfo = NULL;
 
+	if (prev_plpgsql_plugin)
+	{
+		prev_plpgsql_plugin->error_callback = (*plpgsql_check_plugin_var_ptr)->error_callback;
+		prev_plpgsql_plugin->assign_expr = (*plpgsql_check_plugin_var_ptr)->assign_expr;
+
+#if PG_VERSION_NUM >= 150000
+
+		prev_plpgsql_plugin->assign_value = (*plpgsql_check_plugin_var_ptr)->assign_value;
+		prev_plpgsql_plugin->eval_datum = (*plpgsql_check_plugin_var_ptr)->eval_datum;
+		prev_plpgsql_plugin->cast_value = (*plpgsql_check_plugin_var_ptr)->cast_value;
+
+#endif
+
+		pinfo = init_profiler_info(pinfo, func);
+
+		PG_TRY();
+		{
+			if ((prev_plpgsql_plugin)->func_setup)
+				(prev_plpgsql_plugin->func_setup) (estate, func);
+
+			pinfo->prev_plugin_info = estate->plugin_info;
+			estate->plugin_info = pinfo;
+		}
+		PG_CATCH();
+		{
+			pinfo->prev_plugin_info = estate->plugin_info;
+			estate->plugin_info = pinfo;
+
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+
 	if (plpgsql_check_tracer)
 	{
 
@@ -2854,12 +2915,65 @@ plpgsql_check_profiler_func_init(PLpgSQL_execstate *estate, PLpgSQL_function *fu
 }
 
 void
+plpgsql_check_profiler_func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
+{
+	if (prev_plpgsql_plugin && prev_plpgsql_plugin->func_beg)
+	{
+		profiler_info *pinfo = estate->plugin_info;
+
+		PG_TRY();
+		{
+
+			Assert(pinfo);
+
+			estate->plugin_info = pinfo->prev_plugin_info;
+			(prev_plpgsql_plugin->func_beg) (estate, func);
+
+			pinfo->prev_plugin_info = estate->plugin_info;
+			estate->plugin_info = pinfo;
+		}
+		PG_CATCH();
+		{
+			pinfo->prev_plugin_info = estate->plugin_info;
+			estate->plugin_info = pinfo;
+
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+}
+
+void
 plpgsql_check_profiler_func_end(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 {
 	profiler_info *pinfo = NULL;
 
 	if (estate)
+	{
 		pinfo = (profiler_info *) estate->plugin_info;
+
+		if (prev_plpgsql_plugin && prev_plpgsql_plugin->func_end)
+		{
+			PG_TRY();
+			{
+				Assert(pinfo);
+
+				estate->plugin_info = pinfo->prev_plugin_info;
+				(prev_plpgsql_plugin->func_end) (estate, func);
+
+				pinfo->prev_plugin_info = estate->plugin_info;
+				estate->plugin_info = pinfo;
+			}
+			PG_CATCH();
+			{
+				pinfo->prev_plugin_info = estate->plugin_info;
+				estate->plugin_info = pinfo;
+
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+		}
+	}
 	else if (top_pinfo)
 		pinfo = top_pinfo->pinfo;
 
@@ -2925,6 +3039,28 @@ void
 plpgsql_check_profiler_stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 {
 	profiler_info *pinfo = (profiler_info *) estate->plugin_info;
+
+	if (prev_plpgsql_plugin && prev_plpgsql_plugin->stmt_beg)
+	{
+		PG_TRY();
+		{
+			Assert(pinfo);
+
+			estate->plugin_info = pinfo->prev_plugin_info;
+			(prev_plpgsql_plugin->stmt_beg) (estate, stmt);
+
+			pinfo->prev_plugin_info = estate->plugin_info;
+			estate->plugin_info = pinfo;
+		}
+		PG_CATCH();
+		{
+			pinfo->prev_plugin_info = estate->plugin_info;
+			estate->plugin_info = pinfo;
+
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
 
 	if (top_pinfo && top_pinfo->pinfo)
 	{
@@ -3049,15 +3185,37 @@ plpgsql_check_profiler_stmt_end(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 		Assert(top_pinfo && top_pinfo->pinfo);
 
 		pinfo = top_pinfo->pinfo;
-
-
 		estate = pinfo->estate;
 
 		is_error_stmt = top_pinfo->err_stmt == stmt;
 		cleaning_mode = true;
 	}
 	else
+	{
 		pinfo = (profiler_info *) estate->plugin_info;
+
+		if (prev_plpgsql_plugin && prev_plpgsql_plugin->stmt_end)
+		{
+			PG_TRY();
+			{
+				Assert(pinfo);
+
+				estate->plugin_info = pinfo->prev_plugin_info;
+				(prev_plpgsql_plugin->stmt_end) (estate, stmt);
+
+				pinfo->prev_plugin_info = estate->plugin_info;
+				estate->plugin_info = pinfo;
+			}
+			PG_CATCH();
+			{
+				pinfo->prev_plugin_info = estate->plugin_info;
+				estate->plugin_info = pinfo;
+
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+		}
+	}
 
 	if (top_pinfo && top_pinfo->pinfo && !cleaning_mode)
 	{
@@ -3139,7 +3297,11 @@ plpgsql_check_profiler_stmt_end(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 
 		Assert(pinfo->pi_magic == PI_MAGIC);
 
-		if (pstmt->queryid == NOQUERYID && estate)
+		/*
+		 * We can get query id only if stmt_end is not executed
+		 * in cleaning mode, because we need to execute expression
+		 */
+		if (pstmt->queryid == NOQUERYID && !cleaning_mode)
 			pstmt->queryid = profiler_get_queryid(estate, stmt,
 												  &pstmt->has_queryid,
 												  &pstmt->qparams);
@@ -3259,7 +3421,8 @@ plpgsql_check_needs_fmgr_hook(Oid fn_oid)
 		(*plpgsql_check_next_needs_fmgr_hook)(fn_oid))
 		return true;
 
-	if (!plpgsql_check_profiler)
+	if (!plpgsql_check_profiler &&
+		!plpgsql_check_tracer)
 		return false;
 
 	return plpgsql_check_is_plpgsql_function(fn_oid);
@@ -3307,7 +3470,12 @@ plpgsql_check_fmgr_hook(FmgrHookEventType event,
 		case FHET_ABORT:
 			stack = (fmgr_hook_private *) DatumGetPointer(*private);
 
-			if (stack->use_plpgsql)
+			/*
+			 * When plpgsql_check is loaded due dependency on some executed function,
+			 * then FHET_START and FHET_END (or FHET_ABORT) can be assymetric. So
+			 * stack can be NULL. See issue #101
+			 */
+			if (stack && stack->use_plpgsql)
 			{
 				profiler_stack *pstack = top_pinfo->prev_pinfo;
 

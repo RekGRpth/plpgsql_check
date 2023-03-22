@@ -2,7 +2,7 @@
 
 MODULE_big = plpgsql_check
 OBJS = $(patsubst %.c,%.o,$(wildcard src/*.c))
-DATA = plpgsql_check--2.1.sql
+DATA = plpgsql_check--2.3.sql
 EXTENSION = plpgsql_check
 
 ifndef MAJORVERSION
@@ -11,6 +11,8 @@ endif
 
 REGRESS_OPTS = --dbname=$(PL_TESTDB)
 REGRESS = plpgsql_check_passive plpgsql_check_active plpgsql_check_active-$(MAJORVERSION) plpgsql_check_passive-$(MAJORVERSION)
+
+override CFLAGS += -g
 
 ifdef NO_PGXS
 subdir = contrib/plpgsql_check

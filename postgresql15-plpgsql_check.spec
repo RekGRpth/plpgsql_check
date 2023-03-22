@@ -1,5 +1,5 @@
-%global pgmajorversion 14
-%global pginstdir /usr/pgsql-14
+%global pgmajorversion 15
+%global pginstdir /usr/pgsql-15
 %global sname plpgsql_check
 
 Name:		%{sname}_%{pgmajorversion}

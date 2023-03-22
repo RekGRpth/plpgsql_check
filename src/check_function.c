@@ -5,7 +5,7 @@
  *			  workhorse functionality of this extension - expression
  *			  and query validator
  *
- * by Pavel Stehule 2013-2021
+ * by Pavel Stehule 2013-2023
  *
  *-------------------------------------------------------------------------
  */
@@ -33,6 +33,7 @@ static HTAB *plpgsql_check_HashTable = NULL;
 bool plpgsql_check_other_warnings = false;
 bool plpgsql_check_extra_warnings = false;
 bool plpgsql_check_performance_warnings = false;
+bool plpgsql_check_compatibility_warnings = false;
 bool plpgsql_check_fatal_errors = true;
 int plpgsql_check_mode = PLPGSQL_CHECK_MODE_BY_FUNCTION;
 
@@ -309,6 +310,8 @@ plpgsql_check_on_func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 	int closing;
 	List		*exceptions;
 
+	plpgsql_check_profiler_func_beg(estate, func);
+
 	if (plpgsql_check_tracer)
 		plpgsql_check_tracer_on_func_beg(estate, func);
 
@@ -336,23 +339,19 @@ plpgsql_check_on_func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 		plpgsql_check_mark_as_checked(func);
 
 		memset(&ri, 0, sizeof(ri));
-		memset(&cinfo, 0, sizeof(cinfo));
+
+		plpgsql_check_info_init(&cinfo, func->fn_oid);
 
 		if (OidIsValid(func->fn_oid))
 		{
-			HeapTuple	procTuple;
-
-			procTuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(func->fn_oid));
-			if (!HeapTupleIsValid(procTuple))
+			cinfo.proctuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(func->fn_oid));
+			if (!HeapTupleIsValid(cinfo.proctuple))
 				elog(ERROR, "cache lookup failed for function %u", func->fn_oid);
 
-			plpgsql_check_get_function_info(procTuple,
-											&cinfo.rettype,
-											&cinfo.volatility,
-											&cinfo.trigtype,
-											&cinfo.is_procedure);
+			plpgsql_check_get_function_info(&cinfo);
 
-			ReleaseSysCache(procTuple);
+			ReleaseSysCache(cinfo.proctuple);
+			cinfo.proctuple = NULL;
 
 			cinfo.fn_oid = func->fn_oid;
 		}
@@ -363,6 +362,7 @@ plpgsql_check_on_func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 		cinfo.other_warnings = plpgsql_check_other_warnings,
 		cinfo.performance_warnings = plpgsql_check_performance_warnings,
 		cinfo.extra_warnings = plpgsql_check_extra_warnings,
+		cinfo.compatibility_warnings = plpgsql_check_compatibility_warnings;
 
 		ri.format = PLPGSQL_CHECK_FORMAT_ELOG;
 
@@ -1234,7 +1234,8 @@ setup_cstate(PLpgSQL_checkstate *cstate,
 
 #endif
 
-									 plpgsql_check_is_eventtriggeroid(cinfo->rettype));
+									 plpgsql_check_is_eventtriggeroid(cinfo->rettype) ||
+									 cinfo->is_procedure);
 	cstate->estate = NULL;
 	cstate->result_info = result_info;
 	cstate->cinfo = cinfo;
@@ -1285,6 +1286,7 @@ setup_cstate(PLpgSQL_checkstate *cstate,
 	cstate->pragma_vector.disable_performance_warnings = false;
 	cstate->pragma_vector.disable_extra_warnings = false;
 	cstate->pragma_vector.disable_security_warnings = false;
+	cstate->pragma_vector.disable_compatibility_warnings = false;
 
 	/* try to find oid of plpgsql_check pragma function */
 	cstate->pragma_foid = plpgsql_check_pragma_func_oid();
@@ -1318,7 +1320,15 @@ load_configuration(HeapTuple procTuple, bool *reload_config)
 		{						/* Need a new GUC nesting level */
 			new_nest_level = NewGUCNestLevel();
 			*reload_config = true;
+
 			ProcessGUCArray(set_items,
+
+#if PG_VERSION_NUM >= 160000
+
+							NULL,
+
+#endif
+
 							(superuser() ? PGC_SUSET : PGC_USERSET),
 							PGC_S_SESSION,
 							GUC_ACTION_SAVE);

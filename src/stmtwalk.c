@@ -4,7 +4,7 @@
  *
  *			  iteration over plpgsql statements loop
  *
- * by Pavel Stehule 2013-2021
+ * by Pavel Stehule 2013-2023
  *
  *-------------------------------------------------------------------------
  */
@@ -13,6 +13,7 @@
 
 #include "access/tupconvert.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/value.h"
@@ -24,6 +25,7 @@ static void check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, L
 static PLpgSQL_stmt_stack_item * push_stmt_to_stmt_stack(PLpgSQL_checkstate *cstate);
 static void pop_stmt_from_stmt_stack(PLpgSQL_checkstate *cstate);
 static bool is_any_loop_stmt(PLpgSQL_stmt *stmt);
+static bool is_inside_exception_handler(PLpgSQL_stmt_stack_item *current);
 static PLpgSQL_stmt * find_nearest_loop(PLpgSQL_stmt_stack_item *current);
 static PLpgSQL_stmt * find_stmt_with_label(char *label, PLpgSQL_stmt_stack_item *current);
 static int possibly_closed(int c);
@@ -38,6 +40,12 @@ static void check_dynamic_sql(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, PL
 #else
 
 static void check_dynamic_sql(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, PLpgSQL_expr *query, bool into, PLpgSQL_row *row, PLpgSQL_rec *rec, List *params);
+
+#endif
+
+#if PG_VERSION_NUM >= 110000
+
+static bool is_inside_protected_block(PLpgSQL_stmt_stack_item *current);
 
 #endif
 
@@ -284,6 +292,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						List   *exceptions_local = NIL;
 						int		closing_handlers = PLPGSQL_CHECK_UNKNOWN;
 						List   *exceptions_transformed = NIL;
+
+						cstate->top_stmt_stack->is_exception_handler = true;
 
 						if (*closing == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
 						{
@@ -820,6 +830,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 				{
 					PLpgSQL_stmt_return *stmt_rt = (PLpgSQL_stmt_return *) stmt;
 
+					*closing = PLPGSQL_CHECK_CLOSED;
+
 					if (stmt_rt->retvarno >= 0)
 					{
 						PLpgSQL_datum *retvar = cstate->estate->datums[stmt_rt->retvarno];
@@ -832,10 +844,16 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 							case PLPGSQL_DTYPE_VAR:
 								{
 									PLpgSQL_var *var = (PLpgSQL_var *) retvar;
+									Oid			rettype = cstate->estate->func->fn_rettype;
+
+									if (cstate->estate->retistuple)
+										ereport(ERROR,
+												(errcode(ERRCODE_DATATYPE_MISMATCH),
+												 errmsg("cannot return non-composite value from function returning composite type")));
 
 									plpgsql_check_assign_to_target_type(cstate,
-										 cstate->estate->func->fn_rettype, -1,
-										 var->datatype->typoid, false);
+																		rettype, -1,
+																		var->datatype->typoid, false);
 								}
 								break;
 
@@ -843,7 +861,10 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 								{
 									PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
 
-									if (recvar_tupdesc(rec) && estate->rsi && IsA(estate->rsi, ReturnSetInfo))
+									/* don't do next check, when result tuple desc is fake */
+									if (recvar_tupdesc(rec) &&
+										!cstate->fake_rtd &&
+										estate->rsi && IsA(estate->rsi, ReturnSetInfo))
 									{
 										TupleDesc	rettupdesc = estate->rsi->expectedDesc;
 										TupleConversionMap *tupmap ;
@@ -861,7 +882,9 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 								{
 									PLpgSQL_row *row = (PLpgSQL_row *) retvar;
 
-									if (row->rowtupdesc && estate->rsi && IsA(estate->rsi, ReturnSetInfo))
+									if (row->rowtupdesc &&
+										!cstate->fake_rtd &&
+										estate->rsi && IsA(estate->rsi, ReturnSetInfo))
 									{
 										TupleDesc	rettupdesc = estate->rsi->expectedDesc;
 										TupleConversionMap *tupmap ;
@@ -878,9 +901,23 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 							default:
 								;		/* nope */
 						}
-					}
 
-					*closing = PLPGSQL_CHECK_CLOSED;
+						if (cstate->estate->func->fn_rettype == REFCURSOROID &&
+							cstate->cinfo->compatibility_warnings)
+						{
+							if (!(retvar->dtype == PLPGSQL_DTYPE_VAR &&
+								((PLpgSQL_var *) retvar)->datatype->typoid == REFCURSOROID))
+							{
+								plpgsql_check_put_error(cstate,
+														0, 0,
+														"obsolete setting of refcursor or cursor variable",
+														"Internal name of cursor should not be specified by users.",
+														NULL,
+														PLPGSQL_CHECK_WARNING_COMPATIBILITY,
+														0, NULL, NULL);
+							}
+						}
+					}
 
 					if (stmt_rt->expr)
 						plpgsql_check_returned_expr(cstate, stmt_rt->expr, true);
@@ -1206,6 +1243,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						plpgsql_check_expr(cstate, (PLpgSQL_expr *) lfirst(l));
 					}
 
+					plpgsql_check_target(cstate, stmt_open->curvar, NULL, NULL);
+
 					cstate->modif_variables = bms_add_member(cstate->modif_variables,
 									 stmt_open->curvar);
 				}
@@ -1221,6 +1260,26 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						PLpgSQL_diag_item *diag_item = (PLpgSQL_diag_item *) lfirst(lc);
 
 						plpgsql_check_target(cstate, diag_item->target, NULL, NULL);
+
+						/*
+						 * Using GET DIAGNOSTICS stack = PG_CONTEXT is like using
+						 * other VOLATILE function.
+						 */
+						if (!cstate->skip_volatility_check &&
+							cstate->cinfo->performance_warnings &&
+							!stmt_getdiag->is_stacked)
+						{
+							if (diag_item->kind == PLPGSQL_GETDIAG_CONTEXT)
+								cstate->volatility = PROVOLATILE_VOLATILE;
+						}
+					}
+
+					if (stmt_getdiag->is_stacked &&
+						!is_inside_exception_handler(outer_stmt))
+					{
+						ereport(ERROR,
+								(errcode(ERRCODE_STACKED_DIAGNOSTICS_ACCESSED_WITHOUT_ACTIVE_HANDLER),
+								  errmsg("GET STACKED DIAGNOSTICS cannot be used outside an exception handler")));
 					}
 				}
 				break;
@@ -1278,6 +1337,18 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
 							 errmsg("invalid transaction termination")));
+
+				if (is_inside_protected_block(outer_stmt))
+				{
+					if (stmt->cmd_type == PLPGSQL_STMT_COMMIT)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
+								 errmsg("cannot commit while a subtransaction is active")));
+					else
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_TRANSACTION_TERMINATION),
+								 errmsg("cannot roll back while a subtransaction is active")));
+				}
 				break;
 
 			case PLPGSQL_STMT_CALL:
@@ -1297,6 +1368,7 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					if (target != NULL)
 					{
 						check_variable(cstate, (PLpgSQL_variable *) target);
+
 						plpgsql_check_assignment_to_variable(cstate, stmt_call->expr,
 																(PLpgSQL_variable *) target, -1);
 
@@ -1448,7 +1520,7 @@ push_stmt_to_stmt_stack(PLpgSQL_checkstate *cstate)
 	PLpgSQL_stmt_stack_item *stmt_stack_item;
 	PLpgSQL_stmt_stack_item *current = cstate->top_stmt_stack;
 
-	stmt_stack_item = (PLpgSQL_stmt_stack_item *) palloc(sizeof(PLpgSQL_stmt_stack_item));
+	stmt_stack_item = (PLpgSQL_stmt_stack_item *) palloc0(sizeof(PLpgSQL_stmt_stack_item));
 	stmt_stack_item->stmt = stmt;
 
 	switch (PLPGSQL_STMT_TYPES stmt->cmd_type)
@@ -1562,6 +1634,55 @@ find_nearest_loop(PLpgSQL_stmt_stack_item *current)
 	}
 
 	return NULL;
+}
+
+#if PG_VERSION_NUM >= 110000
+
+/*
+ * Returns true, when some outer block handles exceptions.
+ * It is used for check of correct usage of COMMIT or ROLLBACK.
+ */
+static bool
+is_inside_protected_block(PLpgSQL_stmt_stack_item *current)
+{
+	while (current != NULL)
+	{
+		if (current->stmt->cmd_type == PLPGSQL_STMT_BLOCK)
+		{
+			PLpgSQL_stmt_block *stmt_block = (PLpgSQL_stmt_block *) current->stmt;
+
+			if (stmt_block->exceptions && !current->is_exception_handler)
+				return true;
+		}
+
+		current = current->outer;
+	}
+
+	return false;
+}
+
+#endif
+
+/*
+ * This is used for check of correct usage GET STACKED DIAGNOSTICS
+ */
+static bool
+is_inside_exception_handler(PLpgSQL_stmt_stack_item *current)
+{
+	while (current != NULL)
+	{
+		if (current->stmt->cmd_type == PLPGSQL_STMT_BLOCK)
+		{
+			PLpgSQL_stmt_block *stmt_block = (PLpgSQL_stmt_block *) current->stmt;
+
+			if (stmt_block->exceptions && current->is_exception_handler)
+				return true;
+		}
+
+		current = current->outer;
+	}
+
+	return false;
 }
 
 /*
@@ -1900,7 +2021,7 @@ check_dynamic_sql(PLpgSQL_checkstate *cstate,
 							 * so most safe value is NULL instead.
 							 */
 							appendStringInfo(&sinfo, " null ");
-							found_literal_placeholder = false;
+							found_literal_placeholder = true;
 							expr_is_const = false;
 						}
 						else

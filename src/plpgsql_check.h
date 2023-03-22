@@ -15,13 +15,18 @@ typedef uint32 pc_queryid;
 #define NOQUERYID	(0)
 #endif
 
+#if PG_VERSION_NUM < 150000
+#define parse_analyze_fixedparams	parse_analyze
+#endif
+
 enum
 {
 	PLPGSQL_CHECK_ERROR,
 	PLPGSQL_CHECK_WARNING_OTHERS,
 	PLPGSQL_CHECK_WARNING_EXTRA,					/* check shadowed variables */
 	PLPGSQL_CHECK_WARNING_PERFORMANCE,				/* invisible cast check */
-	PLPGSQL_CHECK_WARNING_SECURITY					/* sql injection check */
+	PLPGSQL_CHECK_WARNING_SECURITY,					/* sql injection check */
+	PLPGSQL_CHECK_WARNING_COMPATIBILITY				/* obsolete setting of cursor's or refcursor's variable */
 };
 
 enum
@@ -67,6 +72,7 @@ typedef struct PLpgSQL_stmt_stack_item
 	PLpgSQL_stmt	   *stmt;
 	char			   *label;
 	struct PLpgSQL_stmt_stack_item *outer;
+	bool				is_exception_handler;
 } PLpgSQL_stmt_stack_item;
 
 typedef struct plpgsql_check_result_info
@@ -99,9 +105,16 @@ typedef struct plpgsql_check_info
 	bool		performance_warnings;
 	bool		extra_warnings;
 	bool		security_warnings;
+	bool		compatibility_warnings;
 	bool		show_profile;
+
+	bool		all_warnings;
+	bool		without_warnings;
+
 	char	   *oldtable;
 	char	   *newtable;
+
+	bool		incomment_options_usage_warning;
 } plpgsql_check_info;
 
 typedef struct
@@ -112,6 +125,7 @@ typedef struct
 	unsigned int disable_performance_warnings : 1;
 	unsigned int disable_extra_warnings : 1;
 	unsigned int disable_security_warnings : 1;
+	unsigned int disable_compatibility_warnings : 1;
 } plpgsql_check_pragma_vector;
 
 typedef struct PLpgSQL_checkstate
@@ -176,6 +190,7 @@ extern void plpgsql_check_assign_tupdesc_row_or_rec(PLpgSQL_checkstate *cstate,
 extern void plpgsql_check_recval_assign_tupdesc(PLpgSQL_checkstate *cstate, PLpgSQL_rec *rec, TupleDesc tupdesc, bool is_null);
 extern void plpgsql_check_recval_init(PLpgSQL_rec *rec);
 extern void plpgsql_check_recval_release(PLpgSQL_rec *rec);
+extern void plpgsql_check_is_assignable(PLpgSQL_execstate *estate, int dno);
 
 /*
  * functions from format.c
@@ -198,16 +213,21 @@ extern void plpgsql_check_put_profiler_functions_all_tb(plpgsql_check_result_inf
  * function from catalog.c
  */
 extern bool plpgsql_check_is_eventtriggeroid(Oid typoid);
-extern void plpgsql_check_get_function_info(HeapTuple procTuple, Oid *rettype, char *volatility, PLpgSQL_trigtype *trigtype, bool *is_procedure);
+extern void plpgsql_check_get_function_info(plpgsql_check_info *cinfo);
 extern void plpgsql_check_precheck_conditions(plpgsql_check_info *cinfo);
 extern char *plpgsql_check_get_src(HeapTuple procTuple);
 extern Oid plpgsql_check_pragma_func_oid(void);
 extern bool plpgsql_check_is_plpgsql_function(Oid foid);
+extern Oid plpgsql_check_get_op_namespace(Oid opno);
+extern char *get_extension_version(Oid ext_oid);
+
 
 /*
  * functions from tablefunc.c
  */
 extern void plpgsql_check_info_init(plpgsql_check_info *cinfo, Oid fn_oid);
+extern void plpgsql_check_set_all_warnings(plpgsql_check_info *cinfo);
+extern void plpgsql_check_set_without_warnings(plpgsql_check_info *cinfo);
 
 /*
  * functions from check_function.c
@@ -223,6 +243,7 @@ extern void plpgsql_check_setup_fcinfo(plpgsql_check_info *cinfo, FmgrInfo *flin
 extern bool plpgsql_check_other_warnings;
 extern bool plpgsql_check_extra_warnings;
 extern bool plpgsql_check_performance_warnings;
+extern bool plpgsql_check_compatibility_warnings;
 extern bool plpgsql_check_fatal_errors;
 extern int plpgsql_check_mode;
 
@@ -303,6 +324,9 @@ extern PLpgSQL_row * plpgsql_check_CallExprGetRowTarget(PLpgSQL_checkstate *csta
 extern Oid plpgsql_check_parse_name_or_signature(char *name_or_signature);
 extern bool plpgsql_check_pragma_type(PLpgSQL_checkstate *cstate, const char *str, PLpgSQL_nsitem *ns, int lineno);
 extern bool plpgsql_check_pragma_table(PLpgSQL_checkstate *cstate, const char *str, int lineno);
+extern bool plpgsql_check_pragma_sequence(PLpgSQL_checkstate *cstate, const char *str, int lineno);
+extern void plpgsql_check_search_comment_options(plpgsql_check_info *cinfo);
+extern char *plpgsql_check_process_echo_string(char *str, plpgsql_check_info *cinfo);
 
 /*
  * functions from profiler.c
@@ -313,12 +337,16 @@ extern int plpgsql_check_profiler_max_shared_chunks;
 extern needs_fmgr_hook_type		plpgsql_check_next_needs_fmgr_hook;
 extern fmgr_hook_type			plpgsql_check_next_fmgr_hook;
 
+#if PG_VERSION_NUM >= 150000
+extern void plpgsql_check_profiler_shmem_request(void);
+#endif
 extern void plpgsql_check_profiler_shmem_startup(void);
 
 extern Size plpgsql_check_shmem_size(void);
 extern void plpgsql_check_profiler_init_hash_tables(void);
 
 extern void plpgsql_check_profiler_func_init(PLpgSQL_execstate *estate, PLpgSQL_function *func);
+extern void plpgsql_check_profiler_func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func);
 extern void plpgsql_check_profiler_func_end(PLpgSQL_execstate *estate, PLpgSQL_function *func);
 extern void plpgsql_check_profiler_stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt);
 extern void plpgsql_check_profiler_stmt_end(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt);
@@ -378,9 +406,15 @@ extern bool plpgsql_check_runtime_pragma_vector_changed;
  * functions from plpgsql_check.c
  */
 
+#if PG_VERSION_NUM >= 150000
+extern shmem_request_hook_type prev_shmem_request_hook;
+#endif
 extern shmem_startup_hook_type prev_shmem_startup_hook;
 
 extern PLpgSQL_plugin **plpgsql_check_plugin_var_ptr;
+extern PLpgSQL_plugin *prev_plpgsql_plugin;
+
+extern void plpgsql_check_check_ext_version(Oid fn_oid);
 
 #if PG_VERSION_NUM > 110005
 

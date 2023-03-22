@@ -4,7 +4,7 @@
  *
  *			  routines for working with Postgres's catalog and caches
  *
- * by Pavel Stehule 2013-2021
+ * by Pavel Stehule 2013-2023
  *
  *-------------------------------------------------------------------------
  */
@@ -12,6 +12,7 @@
 #include "plpgsql_check.h"
 
 #include "access/genam.h"
+
 #include "access/htup_details.h"
 
 #if PG_VERSION_NUM >= 120000
@@ -23,6 +24,7 @@
 #include "catalog/pg_extension.h"
 #include "catalog/indexing.h"
 #include "catalog/pg_language.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "commands/extension.h"
@@ -33,6 +35,8 @@
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/regproc.h"
+
+#include "utils/rel.h"
 
 #if PG_VERSION_NUM >= 110000
 
@@ -74,28 +78,24 @@ plpgsql_check_is_eventtriggeroid(Oid typoid)
  * Prepare metadata necessary for plpgsql_check
  */
 void
-plpgsql_check_get_function_info(HeapTuple procTuple,
-								Oid *rettype,
-								char *volatility,
-								PLpgSQL_trigtype *trigtype,
-								bool *is_procedure)
+plpgsql_check_get_function_info(plpgsql_check_info *cinfo)
 {
 	Form_pg_proc proc;
 	char		functyptype;
 
-	proc = (Form_pg_proc) GETSTRUCT(procTuple);
+	proc = (Form_pg_proc) GETSTRUCT(cinfo->proctuple);
 
 	functyptype = get_typtype(proc->prorettype);
 
-	*trigtype = PLPGSQL_NOT_TRIGGER;
+	cinfo->trigtype = PLPGSQL_NOT_TRIGGER;
 
 #if PG_VERSION_NUM >= 110000
 
-	*is_procedure = proc->prokind == PROKIND_PROCEDURE;
+	cinfo->is_procedure = proc->prokind == PROKIND_PROCEDURE;
 
 #else
 
-	*is_procedure = false;
+	cinfo->is_procedure = false;
 
 #endif
 
@@ -115,9 +115,9 @@ plpgsql_check_get_function_info(HeapTuple procTuple,
 #endif
 
 			)
-			*trigtype = PLPGSQL_DML_TRIGGER;
+			cinfo->trigtype = PLPGSQL_DML_TRIGGER;
 		else if (plpgsql_check_is_eventtriggeroid(proc->prorettype))
-			*trigtype = PLPGSQL_EVENT_TRIGGER;
+			cinfo->trigtype = PLPGSQL_EVENT_TRIGGER;
 		else if (proc->prorettype != RECORDOID &&
 				 proc->prorettype != VOIDOID &&
 				 !IsPolymorphicType(proc->prorettype))
@@ -128,8 +128,8 @@ plpgsql_check_get_function_info(HeapTuple procTuple,
 	}
 
 
-	*volatility = ((Form_pg_proc) GETSTRUCT(procTuple))->provolatile;
-	*rettype = ((Form_pg_proc) GETSTRUCT(procTuple))->prorettype;
+	cinfo->volatility = proc->provolatile;
+	cinfo->rettype = proc->prorettype;
 }
 
 char *
@@ -199,6 +199,8 @@ plpgsql_check_precheck_conditions(plpgsql_check_info *cinfo)
 	pfree(funcname);
 }
 
+#if PG_VERSION_NUM < 160000
+
 /*
  * plpgsql_check_get_extension_schema - given an extension OID, fetch its extnamespace
  *
@@ -243,6 +245,79 @@ get_extension_schema(Oid ext_oid)
 		result = ((Form_pg_extension) GETSTRUCT(tuple))->extnamespace;
 	else
 		result = InvalidOid;
+
+	systable_endscan(scandesc);
+
+#if PG_VERSION_NUM >= 120000
+
+	table_close(rel, AccessShareLock);
+
+#else
+
+	heap_close(rel, AccessShareLock);
+
+#endif
+
+	return result;
+}
+
+#endif
+
+/*
+ * get_extension_version - given an extension OID, look up the version
+ *
+ * Returns a palloc'd string, or NULL if no such extension.
+ */
+char *
+get_extension_version(Oid ext_oid)
+{
+	char	   *result;
+	Relation	rel;
+	SysScanDesc scandesc;
+	HeapTuple	tuple;
+	ScanKeyData entry[1];
+
+#if PG_VERSION_NUM >= 120000
+
+	rel = table_open(ExtensionRelationId, AccessShareLock);
+
+	ScanKeyInit(&entry[0],
+				Anum_pg_extension_oid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(ext_oid));
+
+#else
+
+	rel = heap_open(ExtensionRelationId, AccessShareLock);
+
+	ScanKeyInit(&entry[0],
+				ObjectIdAttributeNumber,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(ext_oid));
+
+#endif
+
+	scandesc = systable_beginscan(rel, ExtensionOidIndexId, true,
+								  NULL, 1, entry);
+
+	tuple = systable_getnext(scandesc);
+
+	/* We assume that there can be at most one matching tuple */
+	if (HeapTupleIsValid(tuple))
+	{
+		Datum		datum;
+		bool		isnull;
+
+		datum = heap_getattr(tuple, Anum_pg_extension_extversion,
+							 RelationGetDescr(rel), &isnull);
+
+		if (isnull)
+			elog(ERROR, "extversion is null");
+
+		result = text_to_cstring(DatumGetTextPP(datum));
+	}
+	else
+		result = NULL;
 
 	systable_endscan(scandesc);
 
@@ -341,3 +416,22 @@ plpgsql_check_is_plpgsql_function(Oid foid)
 	return result;
 }
 
+/*
+ * plpgsql_check_get_op_namespace
+ *	  returns the name space of the operator with the given opno
+ */
+Oid
+plpgsql_check_get_op_namespace(Oid opno)
+{
+	HeapTuple	tp;
+
+	tp = SearchSysCache1(OPEROID, ObjectIdGetDatum(opno));
+	if (HeapTupleIsValid(tp))
+	{
+		Form_pg_operator optup = (Form_pg_operator) GETSTRUCT(tp);
+		ReleaseSysCache(tp);
+		return optup->oprnamespace;
+	}
+	else
+		return InvalidOid;
+}

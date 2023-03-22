@@ -2392,6 +2392,9 @@ create function myfunc2(a int, b float) returns integer as $$ begin end $$ langu
 create function myfunc3(a int, b float) returns integer as $$ begin end $$ language plpgsql;
 create function myfunc4(a int, b float) returns integer as $$ begin end $$ language plpgsql;
 
+create function opfunc1(a int, b float) returns integer as $$ begin end $$ language plpgsql;
+create operator *** (procedure = opfunc1, leftarg = int, rightarg = float);
+
 create table mytable(a int);
 create table myview as select * from mytable;
 
@@ -2400,7 +2403,7 @@ returns void as $$
 declare x integer;
 begin
   raise notice '%', myfunc1(a, b);
-  x := myfunc2(a, b);
+  x := myfunc2(a, b) operator(public.***) 1;
   perform myfunc3(m.a, b) from myview m;
   insert into mytable select myfunc4(a, b);
 end;
@@ -2489,12 +2492,27 @@ begin
 end;
 $$ language plpgsql;
 
+create type record03 as (a int, b int);
+
+create or replace function rrecord03()
+returns record03 as $$
+declare r record;
+begin
+  r := row(1);
+  return r;
+end;
+$$ language plpgsql;
+
 -- should not to raise false alarms
 select * from plpgsql_check_function('rrecord01');
 select * from plpgsql_check_function('rrecord02');
+-- should detect different return but still detect return
+select * from plpgsql_check_function('rrecord03', fatal_errors => false);
 
 drop function rrecord01();
 drop function rrecord02();
+drop function rrecord03();
+drop type record03;
 
 create or replace function bugfunc01()
 returns void as $$
@@ -4744,4 +4762,196 @@ drop function test_function(int);
 drop function test_function1(int);
 
 set plpgsql_check.profiler to off;
+
+-- ignores syntax errors when literals placehodlers are used
+create function test_function()
+returns void as $$
+begin
+    execute format('do %L', 'begin end');
+end
+$$ language plpgsql;
+
+select * from plpgsql_check_function('test_function');
+
+drop function test_function();
+
+load 'plpgsql_check';
+
+drop type testtype cascade;
+
+create type testtype as (a int, b int);
+
+create function test_function()
+returns record as $$
+declare r record;
+begin
+  r := (10,20);
+  if false then
+    return r;
+  end if;
+
+  return null;
+end;
+$$ language plpgsql;
+
+create function test_function33()
+returns record as $$
+declare r testtype;
+begin
+  r := (10,20);
+  if false then
+    return r;
+  end if;
+
+  return null;
+end;
+$$ language plpgsql;
+
+-- should not to raise false alarm due check against fake result type
+select plpgsql_check_function('test_function');
+select plpgsql_check_function('test_function33');
+
+-- try to check in passive mode
+set plpgsql_check.mode = 'every_start';
+select test_function();
+select test_function33();
+
+select * from test_function() as (a int, b int);
+select * from test_function33() as (a int, b int);
+
+-- should to identify error
+select * from test_function() as (a int, b int, c int);
+select * from test_function33() as (a int, b int, c int);
+
+drop function test_function();
+drop function test_function33();
+
+drop type testtype;
+
+
+-- should not to raise false alarm
+create type c1 as (
+  a text
+);
+
+create table t1 (
+  a c1,
+  b c1
+);
+
+insert into t1 (values ('(abc)', '(def)'));
+alter table t1 drop column a;
+
+create or replace function test_function()
+returns t1 as $$
+declare myrow t1%rowtype;
+begin
+  select * into myrow from t1 limit 1;
+  return myrow;
+end;
+$$ language plpgsql;
+
+select * from test_function();
+select * from plpgsql_check_function('public.test_function()');
+
+drop function test_function();
+
+drop table t1;
+drop type c1;
+
+-- compatibility warnings
+create or replace function foo01()
+returns refcursor as $$
+declare
+  c cursor for select 1;
+  r refcursor;
+begin
+  open c;
+  r := c;
+  return r;
+end;
+$$ language plpgsql;
+
+-- no warnings
+select * from plpgsql_check_function('foo01', compatibility_warnings => true);
+
+create or replace function foo01()
+returns refcursor as $$
+declare
+  c cursor for select 1;
+  r refcursor;
+begin
+  open c;
+  r := 'c';
+  return r;
+end;
+$$ language plpgsql;
+
+-- warning
+select * from plpgsql_check_function('foo01', extra_warnings => false, compatibility_warnings => true);
+
+create or replace function foo01()
+returns refcursor as $$
+declare
+  c cursor for select 1;
+  r refcursor;
+begin
+  open c;
+  r := c;
+  return 'c';
+end;
+$$ language plpgsql;
+
+-- warning
+select * from plpgsql_check_function('foo01', extra_warnings => false, compatibility_warnings => true);
+
+-- pragma sequence test
+create or replace function test_function()
+returns void as $$
+begin
+  perform plpgsql_check_pragma('sequence: xx');
+  perform nextval('pg_temp.xy');
+  perform nextval('pg_temp.xx');
+end
+$$ language plpgsql;
+
+select * from plpgsql_check_function('test_function');
+
+drop function test_function();
+
+create table t1(x int);
+
+create or replace function f1_trg()
+returns trigger as $$
+declare x int;
+begin
+  return x;
+end;
+$$ language plpgsql;
+
+create trigger t1_f1 before insert on t1
+  for each row
+  execute procedure f1_trg();
+
+-- raise error
+select * from plpgsql_check_function('f1_trg', 't1');
+
+drop trigger t1_f1 on t1;
+drop table t1;
+drop function f1_trg;
+
+create function test_function()
+returns void as $$
+declare
+  a int; b int;
+  c int; d char;
+begin
+  c := a + d;
+end;
+$$ language plpgsql;
+
+-- only b should be marked as unused variable
+select * from plpgsql_check_function('test_function', fatal_errors := false);
+
+drop function test_function();
 

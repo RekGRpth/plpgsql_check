@@ -4,7 +4,7 @@
  *
  *			  enhanced checks for plpgsql functions
  *
- * by Pavel Stehule 2013-2021
+ * by Pavel Stehule 2013-2023
  *
  *-------------------------------------------------------------------------
  *
@@ -26,6 +26,10 @@
 #include "plpgsql_check.h"
 #include "plpgsql_check_builtins.h"
 
+#include "catalog/dependency.h"
+#include "catalog/pg_proc.h"
+#include "commands/extension.h"
+
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "utils/guc.h"
@@ -36,6 +40,7 @@ PG_MODULE_MAGIC;
 #endif
 
 PLpgSQL_plugin **plpgsql_check_plugin_var_ptr;
+PLpgSQL_plugin *prev_plpgsql_plugin;
 
 static PLpgSQL_plugin plugin_funcs = { plpgsql_check_profiler_func_init,
 									   plpgsql_check_on_func_beg,
@@ -43,7 +48,17 @@ static PLpgSQL_plugin plugin_funcs = { plpgsql_check_profiler_func_init,
 									   plpgsql_check_profiler_stmt_beg,
 									   plpgsql_check_profiler_stmt_end,
 									   NULL,
-									   NULL};
+									   NULL
+
+#if PG_VERSION_NUM >= 150000
+
+									  , NULL,
+									  NULL,
+									  NULL
+
+#endif
+
+									  };
 
 
 static const struct config_enum_entry plpgsql_check_mode_options[] = {
@@ -75,7 +90,18 @@ static const struct config_enum_entry tracer_level_options[] = {
 };
 
 void			_PG_init(void);
+
+#if PG_VERSION_NUM < 150000
+
 void			_PG_fini(void);
+
+#endif
+
+#if PG_VERSION_NUM >= 150000
+
+shmem_request_hook_type prev_shmem_request_hook = NULL;
+
+#endif
 
 shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 
@@ -92,12 +118,47 @@ plpgsql_check__exec_get_datum_type_t plpgsql_check__exec_get_datum_type_p;
 plpgsql_check__recognize_err_condition_t plpgsql_check__recognize_err_condition_p;
 plpgsql_check__ns_lookup_t plpgsql_check__ns_lookup_p;
 
+static bool is_expected_extversion = false;
+
 
 /*
  * load_external_function retursn PGFunctions - we need generic function, so
  * it is not 100% correct, but in used context it is not a problem.
  */
 #define LOAD_EXTERNAL_FUNCTION(file, funcname)	((void *) (load_external_function(file, funcname, true, NULL)))
+
+#define EXPECTED_EXTVERSION		"2.3"
+
+void
+plpgsql_check_check_ext_version(Oid fn_oid)
+{
+	if (!is_expected_extversion)
+	{
+		Oid			extoid;
+		char	   *extver;
+
+		extoid = getExtensionOfObject(ProcedureRelationId, fn_oid);
+		Assert(OidIsValid(extoid));
+
+		extver = get_extension_version(extoid);
+		Assert(extver);
+
+		if (strcmp(EXPECTED_EXTVERSION, extver) != 0)
+		{
+			char	   *extname = get_extension_name(extoid);
+
+			ereport(ERROR,
+					(errmsg("extension \"%s\" is not updated in system catalog", extname),
+					 errdetail("version \"%s\" is required, version \"%s\" is installed", EXPECTED_EXTVERSION, extver),
+					 errhint("execute \"ALTER EXTENSION %s UPDATE TO '%s'\"", extname, EXPECTED_EXTVERSION)));
+		}
+		else
+		{
+			pfree(extver);
+			is_expected_extversion = true;
+		}
+	}
+}
 
 /*
  * Module initialization
@@ -146,6 +207,7 @@ _PG_init(void)
 		LOAD_EXTERNAL_FUNCTION("$libdir/plpgsql", "plpgsql_ns_lookup");
 
 	plpgsql_check_plugin_var_ptr = (PLpgSQL_plugin **) find_rendezvous_variable( "PLpgSQL_plugin");
+	prev_plpgsql_plugin = *plpgsql_check_plugin_var_ptr;
 	*plpgsql_check_plugin_var_ptr = &plugin_funcs;
 
 	DefineCustomBoolVariable("plpgsql_check.regress_test_mode",
@@ -185,6 +247,14 @@ _PG_init(void)
 					    "when is true, then performance warnings are showed",
 					    NULL,
 					    &plpgsql_check_performance_warnings,
+					    false,
+					    PGC_USERSET, 0,
+					    NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("plpgsql_check.compatibility_warnings",
+					    "when is true, then compatibility warnings are showed",
+					    NULL,
+					    &plpgsql_check_compatibility_warnings,
 					    false,
 					    PGC_USERSET, 0,
 					    NULL, NULL, NULL);
@@ -290,14 +360,30 @@ _PG_init(void)
 						    PGC_POSTMASTER, 0,
 						    NULL, NULL, NULL);
 
+#if PG_VERSION_NUM < 150000
+
+		/*
+		 * If you change code here, don't forget to also report the
+		 * modifications in plpgsql_check_profiler_shmem_request() for pg15 and
+		 * later.
+		 */
 		RequestAddinShmemSpace(plpgsql_check_shmem_size());
 
 		RequestNamedLWLockTranche("plpgsql_check profiler", 1);
 		RequestNamedLWLockTranche("plpgsql_check fstats", 1);
 
+#endif
+
 		/*
 		 * Install hooks.
 		 */
+#if PG_VERSION_NUM >= 150000
+
+		prev_shmem_request_hook = shmem_request_hook;
+		shmem_request_hook = plpgsql_check_profiler_shmem_request;
+
+#endif
+
 		prev_shmem_startup_hook = shmem_startup_hook;
 		shmem_startup_hook = plpgsql_check_profiler_shmem_startup;
 	}
@@ -311,12 +397,19 @@ _PG_init(void)
 	inited = true;
 }
 
+#if PG_VERSION_NUM < 150000
+
 /*
  * Module unload callback
  */
 void
 _PG_fini(void)
 {
+#if PG_VERSION_NUM >= 150000
+
+	shmem_request_hook = prev_shmem_request_hook;
+
+#endif
 	shmem_startup_hook = prev_shmem_startup_hook;
 
 	/* Be more correct, and clean rendezvous variable */
@@ -325,3 +418,5 @@ _PG_fini(void)
 	needs_fmgr_hook = plpgsql_check_next_needs_fmgr_hook;
 	fmgr_hook = plpgsql_check_next_fmgr_hook;
 }
+
+#endif
