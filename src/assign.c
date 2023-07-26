@@ -66,10 +66,10 @@ plpgsql_check_record_variable_usage(PLpgSQL_checkstate *cstate, int dno, bool wr
 void
 plpgsql_check_row_or_rec(PLpgSQL_checkstate *cstate, PLpgSQL_row *row, PLpgSQL_rec *rec)
 {
-	int			fnum;
 
 	if (row != NULL)
 	{
+		int			fnum;
 
 		for (fnum = 0; fnum < row->nfields; fnum++)
 		{
@@ -344,7 +344,7 @@ plpgsql_check_assign_to_target_type(PLpgSQL_checkstate *cstate,
 					  PLPGSQL_CHECK_ERROR,
 					  0, NULL, NULL);
 	}
-	else if (target_typoid != value_typoid && !isnull)
+	else if (!isnull)
 	{
 		StringInfoData	str;
 

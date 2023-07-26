@@ -748,13 +748,14 @@ get_func_info(PLpgSQL_function *func)
 	if (!found_func_info_entry)
 	{
 		char	   *fn_name;
-		MemoryContext oldcxt;
 		int			natural_id = 0;
 
 		fn_name = get_func_name(func->fn_oid);
 
 		if (persistent_func_info)
 		{
+			MemoryContext oldcxt;
+
 			oldcxt = MemoryContextSwitchTo(pldbgapi2_mcxt);
 
 			Assert(fn_name);
@@ -911,13 +912,17 @@ static void
 pldbgapi2_func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 {
 	pldbgapi2_plugin_info *plugin_info = estate->plugin_info;
-	fmgr_plpgsql_cache *fcache_plpgsql = plugin_info->fcache_plpgsql;
+	fmgr_plpgsql_cache *fcache_plpgsql;
 	int			i;
 
-	if (plugin_info && plugin_info->magic != PLUGIN_INFO_MAGIC)
+	Assert(plugin_info);
+
+	if (plugin_info->magic != PLUGIN_INFO_MAGIC)
 		ereport(ERROR,
 				(errmsg("bad magic number of pldbgapi2 plpgsql debug api hook"),
-				 errdetail("Some extension plpgsql debug api does not work correctly")));
+				 errdetail("Some extension using pl debug api does not work correctly.")));
+
+	fcache_plpgsql = plugin_info->fcache_plpgsql;
 
 	Assert(fcache_plpgsql->magic == FMGR_CACHE_MAGIC);
 	Assert(fcache_plpgsql);
@@ -974,16 +979,24 @@ static void
 pldbgapi2_func_end(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 {
 	pldbgapi2_plugin_info *plugin_info = estate->plugin_info;
-	fmgr_plpgsql_cache *fcache_plpgsql = plugin_info->fcache_plpgsql;
+	fmgr_plpgsql_cache *fcache_plpgsql;
 	int			i;
 
-	if (plugin_info && plugin_info->magic != PLUGIN_INFO_MAGIC)
-		ereport(ERROR,
-				(errmsg("bad magic number of pldbgapi2 plpgsql debug api hook"),
-				 errdetail("Some extension plpgsql debug api does not work correctly")));
+	if (!plugin_info)
+		return;
 
-	Assert(fcache_plpgsql->magic == FMGR_CACHE_MAGIC);
+	if (plugin_info->magic != PLUGIN_INFO_MAGIC)
+	{
+		ereport(WARNING,
+				(errmsg("bad magic number of pldbgapi2 plpgsql debug api hook"),
+				 errdetail("Some extension using pl debug api does not work correctly.")));
+		return;
+	}
+
+	fcache_plpgsql = plugin_info->fcache_plpgsql;
+
 	Assert(fcache_plpgsql);
+	Assert(fcache_plpgsql->magic == FMGR_CACHE_MAGIC);
 	Assert(fcache_plpgsql->is_plpgsql);
 
 #ifdef USE_ASSERT_CHECKING
@@ -1038,17 +1051,21 @@ static void
 pldbgapi2_stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 {
 	pldbgapi2_plugin_info *plugin_info = estate->plugin_info;
-	fmgr_plpgsql_cache *fcache_plpgsql = plugin_info->fcache_plpgsql;
+	fmgr_plpgsql_cache *fcache_plpgsql;
 	int			i;
 	int			parent_id = 0;
 
-	if (plugin_info && plugin_info->magic != PLUGIN_INFO_MAGIC)
+	Assert(plugin_info);
+
+	if (plugin_info->magic != PLUGIN_INFO_MAGIC)
 		ereport(ERROR,
 				(errmsg("bad magic number of pldbgapi2 plpgsql debug api hook"),
-				 errdetail("Some extension plpgsql debug api does not work correctly")));
+				 errdetail("Some extension using pl debug api does not work correctly.")));
 
-	Assert(fcache_plpgsql->magic == FMGR_CACHE_MAGIC);
+	fcache_plpgsql = plugin_info->fcache_plpgsql;
+
 	Assert(fcache_plpgsql);
+	Assert(fcache_plpgsql->magic == FMGR_CACHE_MAGIC);
 	Assert(fcache_plpgsql->is_plpgsql);
 
 #ifdef USE_ASSERT_CHECKING
@@ -1140,16 +1157,24 @@ static void
 pldbgapi2_stmt_end(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 {
 	pldbgapi2_plugin_info *plugin_info = estate->plugin_info;
-	fmgr_plpgsql_cache *fcache_plpgsql = plugin_info->fcache_plpgsql;
+	fmgr_plpgsql_cache *fcache_plpgsql;
 	int			i;
 
-	if (plugin_info && plugin_info->magic != PLUGIN_INFO_MAGIC)
-		ereport(ERROR,
-				(errmsg("bad magic number of pldbgapi2 plpgsql debug api hook"),
-				 errdetail("Some extension plpgsql debug api does not work correctly")));
+	if (!plugin_info)
+		return;
 
-	Assert(fcache_plpgsql->magic == FMGR_CACHE_MAGIC);
+	if (plugin_info->magic != PLUGIN_INFO_MAGIC)
+	{
+		ereport(WARNING,
+				(errmsg("bad magic number of pldbgapi2 plpgsql debug api hook"),
+				 errdetail("Some extension using pl debug api does not work correctly.")));
+		return;
+	}
+
+	fcache_plpgsql = plugin_info->fcache_plpgsql;
+
 	Assert(fcache_plpgsql);
+	Assert(fcache_plpgsql->magic == FMGR_CACHE_MAGIC);
 	Assert(fcache_plpgsql->is_plpgsql);
 
 #ifdef USE_ASSERT_CHECKING

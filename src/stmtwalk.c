@@ -139,13 +139,11 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 				{
 					PLpgSQL_stmt_block *stmt_block = (PLpgSQL_stmt_block *) stmt;
 					int			i;
-					PLpgSQL_datum *d;
 
 					for (i = 0; i < stmt_block->n_initvars; i++)
 					{
 						char	   *refname;
-
-						d = func->datums[stmt_block->initvarnos[i]];
+						PLpgSQL_datum *d = func->datums[stmt_block->initvarnos[i]];
 
 						if (d->dtype == PLPGSQL_DTYPE_VAR ||
 							d->dtype == PLPGSQL_DTYPE_ROW ||
@@ -473,7 +471,6 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 			case PLPGSQL_STMT_CASE:
 				{
 					PLpgSQL_stmt_case *stmt_case = (PLpgSQL_stmt_case *) stmt;
-					Oid			result_oid;
 					int			closing_local;
 					List	    *exceptions_local;
 					ListCell    *l;
@@ -482,6 +479,7 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					if (stmt_case->t_expr != NULL)
 					{
 						PLpgSQL_var *t_var = (PLpgSQL_var *) cstate->estate->datums[stmt_case->t_varno];
+						Oid			result_oid;
 
 						/*
 						 * we need to set hidden variable type
@@ -866,7 +864,6 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 							case PLPGSQL_DTYPE_REC:
 								{
 									PLpgSQL_rec *rec = (PLpgSQL_rec *) retvar;
-									TupleConversionMap *tupmap;
 
 									if (!HeapTupleIsValid(recvar_tuple(rec)))
 										ereport(ERROR,
@@ -878,6 +875,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 									if (tupdesc)
 									{
+										TupleConversionMap *tupmap;
+
 										tupmap = convert_tuples_by_position(recvar_tupdesc(rec),
 																tupdesc,
 											gettext_noop("wrong record type supplied in RETURN NEXT"));
@@ -889,16 +888,14 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 							case PLPGSQL_DTYPE_ROW:
 								{
-									PLpgSQL_row *row = (PLpgSQL_row *) retvar;
-									bool	row_is_valid_result;
-
-									row_is_valid_result = true;
-
 									if (tupdesc)
 									{
+										bool		row_is_valid_result = true;
+										PLpgSQL_row *row = (PLpgSQL_row *) retvar;
+
 										if (row->nfields == natts)
 										{
-											int		i;
+											int			i;
 
 											for (i = 0; i < natts; i++)
 											{
@@ -1283,10 +1280,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 static void
 check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, List **exceptions)
 {
-	ListCell   *lc;
 	int			closing_local;
 	List	   *exceptions_local;
-	volatile bool		dead_code_alert = false;
 	plpgsql_check_pragma_vector		prev_pragma_vector = cstate->pragma_vector;
 
 	*closing = PLPGSQL_CHECK_UNCLOSED;
@@ -1294,6 +1289,9 @@ check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, List **except
 
 	PG_TRY();
 	{
+		ListCell   *lc;
+		bool		dead_code_alert = false;
+
 		foreach(lc, stmts)
 		{
 			PLpgSQL_stmt	   *stmt = (PLpgSQL_stmt *) lfirst(lc);
@@ -1537,11 +1535,11 @@ found_shadowed_variable(char *varname, PLpgSQL_stmt_stack_item *current, PLpgSQL
 		{
 			PLpgSQL_stmt_block *stmt_block = (PLpgSQL_stmt_block *) current->stmt;
 			int			i;
-			PLpgSQL_datum *d;
 
 			for (i = 0; i < stmt_block->n_initvars; i++)
 			{
 				char	   *refname;
+				PLpgSQL_datum *d;
 
 				d = cstate->estate->func->datums[stmt_block->initvarnos[i]];
 				refname = plpgsql_check_datum_get_refname(d);
@@ -1747,7 +1745,11 @@ dynsql_parser_setup(struct ParseState *pstate, DynSQLParams *params)
 static bool
 has_assigned_tupdesc(PLpgSQL_checkstate *cstate, PLpgSQL_rec *rec)
 {
-	PLpgSQL_rec *target = (PLpgSQL_rec *) (cstate->estate->datums[rec->dno]);
+	PLpgSQL_rec *target;
+
+	Assert(rec);
+
+	target = (PLpgSQL_rec *) (cstate->estate->datums[rec->dno]);
 
 	Assert(rec->dtype == PLPGSQL_DTYPE_REC);
 
@@ -2103,6 +2105,8 @@ check_dynamic_sql(PLpgSQL_checkstate *cstate,
 	/* recheck if target rec var has assigned tupdesc */
 	if (into)
 	{
+		Assert(target);
+
 		check_variable(cstate, target);
 
 		if (raise_unknown_rec_warning ||
