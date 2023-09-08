@@ -834,6 +834,7 @@ Datum
 plpgsql_check_profiler_ctrl(PG_FUNCTION_ARGS)
 {
 	char	   *optstr;
+	bool		result;
 
 #define OPTNAME		"plpgsql_check.profiler"
 
@@ -850,11 +851,17 @@ plpgsql_check_profiler_ctrl(PG_FUNCTION_ARGS)
 	optstr = GetConfigOptionByName(OPTNAME, NULL, false);
 
 	if (strcmp(optstr, "on") == 0)
+	{
 		elog(NOTICE, "profiler is active");
+		result = true;
+	}
 	else
+	{
 		elog(NOTICE, "profiler is not active");
+		result = false;
+	};
 
-	PG_RETURN_VOID();
+	PG_RETURN_BOOL(result);
 }
 
 /*
@@ -2027,7 +2034,7 @@ plpgsql_check_profiler_show_profile(plpgsql_check_result_info *ri,
 					Assert(chunk != NULL);
 
 					/* skip invisible statements if any */
-					if (0 && chunk->stmts[current_statement].lineno < lineno)
+					if (chunk->stmts[current_statement].lineno < lineno)
 					{
 						current_statement += 1;
 						continue;
