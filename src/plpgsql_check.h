@@ -67,7 +67,14 @@ typedef struct PLpgSQL_stmt_stack_item
 	char	   *label;
 	struct PLpgSQL_stmt_stack_item *outer;
 	bool		is_exception_handler;
+	Bitmapset  *invalidate_strconstvars;
 } PLpgSQL_stmt_stack_item;
+
+typedef struct PLpgSQL_statements
+{
+	struct PLpgSQL_statements *outer;
+	Bitmapset  *invalidate_strconstvars;
+} PLpgSQL_statements;
 
 typedef struct plpgsql_check_result_info
 {
@@ -100,6 +107,7 @@ typedef struct plpgsql_check_info
 	bool		extra_warnings;
 	bool		security_warnings;
 	bool		compatibility_warnings;
+	bool		constants_tracing;
 	bool		show_profile;
 
 	bool		all_warnings;
@@ -120,6 +128,7 @@ typedef struct
 	unsigned int disable_extra_warnings : 1;
 	unsigned int disable_security_warnings : 1;
 	unsigned int disable_compatibility_warnings : 1;
+	unsigned int disable_constants_tracing : 1;
 } plpgsql_check_pragma_vector;
 
 #define CI_MAGIC		2023042922
@@ -158,6 +167,8 @@ typedef struct PLpgSQL_checkstate
 	bool		was_pragma;					/* true, when last expression was a plpgsql_check pragma */
 	plpgsql_check_pragma_vector pragma_vector;
 	Oid			pragma_foid;				/* oid of plpgsql_check pragma function */
+	char	  **strconstvars;				/* the values of string variables where the value is constant */
+	PLpgSQL_statements *top_stmts;			/* pointer to current statement group */
 } PLpgSQL_checkstate;
 
 typedef struct
@@ -237,6 +248,7 @@ extern bool plpgsql_check_extra_warnings;
 extern bool plpgsql_check_performance_warnings;
 extern bool plpgsql_check_compatibility_warnings;
 extern bool plpgsql_check_fatal_errors;
+extern bool plpgsql_check_constants_tracing;
 extern int plpgsql_check_mode;
 
 /*
@@ -250,11 +262,15 @@ extern bool plpgsql_check_is_sql_injection_vulnerable(PLpgSQL_checkstate *cstate
 extern bool plpgsql_check_contain_volatile_functions(Node *clause, PLpgSQL_checkstate *cstate);
 extern bool plpgsql_check_contain_mutable_functions(Node *clause, PLpgSQL_checkstate *cstate);
 extern bool plpgsql_check_vardno_is_used_for_reading(Node *node, int dno);
+extern char *plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate, const char *fmt, List *args,
+	bool *found_ident_placeholder, bool *found_literal_placeholder, bool *expr_is_const);
 
 /*
  * functions from check_expr.c
  */
-extern char *plpgsql_check_expr_get_string(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, bool *isnull);
+extern char *plpgsql_check_expr_get_string(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, int *location);
+extern char *plpgsql_check_get_tracked_const(PLpgSQL_checkstate *cstate, Node *node);
+extern char *plpgsql_check_get_const_string(PLpgSQL_checkstate *cstate, Node *node, int *location);
 extern void plpgsql_check_expr_with_scalar_type(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, Oid expected_typoid, bool required);
 extern void plpgsql_check_returned_expr(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, bool is_expression);
 extern void plpgsql_check_expr_as_rvalue(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr,
@@ -272,7 +288,7 @@ extern void plpgsql_check_expr_generic_with_parser_setup(PLpgSQL_checkstate *cst
 	ParserSetupHook parser_setup, void *arg);
 
 extern Node *plpgsql_check_expr_get_node(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, bool force_plan_checks);
-extern char *plpgsql_check_const_to_string(Const *c);
+extern char *plpgsql_check_const_to_string(Node *node, int *location);
 extern CachedPlanSource *plpgsql_check_get_plan_source(PLpgSQL_checkstate *cstate, SPIPlanPtr plan);
 
 extern void plpgsql_check_assignment_to_variable(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr,
