@@ -70,6 +70,14 @@ static const struct config_enum_entry tracer_level_options[] = {
 	{NULL, 0, false}
 };
 
+static const struct config_enum_entry cursors_leaks_level_options[] = {
+	{"notice", NOTICE, false},
+	{"WARNING", WARNING, false},
+	{"ERROR", ERROR, false},
+	{NULL, 0, false}
+};
+
+
 void			_PG_init(void);
 
 #if PG_VERSION_NUM < 150000
@@ -108,7 +116,7 @@ static bool is_expected_extversion = false;
  */
 #define LOAD_EXTERNAL_FUNCTION(file, funcname)	((void *) (load_external_function(file, funcname, true, NULL)))
 
-#define EXPECTED_EXTVERSION		"2.6"
+#define EXPECTED_EXTVERSION		"2.7"
 
 void
 plpgsql_check_check_ext_version(Oid fn_oid)
@@ -337,6 +345,31 @@ _PG_init(void)
 							PGC_USERSET, 0,
 							NULL, NULL, NULL);
 
+	DefineCustomEnumVariable("plpgsql_check.cursors_leaks_errlevel",
+					    "sets an error level of detection of unclosed cursors",
+					    NULL,
+					    (int *) &plpgsql_check_cursors_leaks_level,
+					    WARNING,
+					    cursors_leaks_level_options,
+					    PGC_USERSET, 0,
+					    NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("plpgsql_check.cursors_leaks",
+					    "when is true, then detection of unclosed cursors is active",
+					    NULL,
+					    &plpgsql_check_cursors_leaks,
+					    true,
+					    PGC_USERSET, 0,
+					    NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("plpgsql_check.strict_cursors_leaks",
+					    "when is true, then detection of unclosed cursors is executed immediately when function is finished",
+					    NULL,
+					    &plpgsql_check_cursors_leaks_strict,
+					    false,
+					    PGC_USERSET, 0,
+					    NULL, NULL, NULL);
+
 	EmitWarningsOnPlaceholders("plpgsql_check");
 
 	plpgsql_check_HashTableInit();
@@ -386,6 +419,8 @@ _PG_init(void)
 	plpgsql_check_passive_check_init();
 	plpgsql_check_profiler_init();
 	plpgsql_check_tracer_init();
+	plpgsql_check_cursors_leaks_init();
+
 	inited = true;
 }
 
