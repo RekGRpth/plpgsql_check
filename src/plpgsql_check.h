@@ -424,83 +424,6 @@ extern void plpgsql_check_tracer_init(void);
 extern void plpgsql_check_pragma_apply(PLpgSQL_checkstate *cstate, char *pragma_str, PLpgSQL_nsitem *ns, int lineno);
 
 /*
- * pldbgapi2 statement plugin2 info. This info is created
- * when function is first started and it is cached in session.
- */
-typedef struct plpgsql_check_plugin2_stmt_info
-{
-	int			level;
-	int			natural_id;
-	int			parent_id;
-	const char *typname;
-	bool		is_invisible;
-	bool		is_container;
-}			plpgsql_check_plugin2_stmt_info;
-
-/*
- * functions from pldbgapi2
- */
-typedef struct plpgsql_check_plugin2
-{
-	/* Function pointers set up by the plugin */
-	void		(*func_setup2) (PLpgSQL_execstate *estate, PLpgSQL_function *func, void **plugin2_info);
-	void		(*func_beg2) (PLpgSQL_execstate *estate, PLpgSQL_function *func, void **plugin2_info);
-	void		(*func_end2) (PLpgSQL_execstate *estate, PLpgSQL_function *func, void **plugin2_info);
-	void		(*func_end2_aborted) (Oid fn_oid, void **plugin2_info);
-	void		(*stmt_beg2) (PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt, void **plugin2_info);
-	void		(*stmt_end2) (PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt, void **plugin2_info);
-	void		(*stmt_end2_aborted) (Oid fn_oid, int stmtid, void **plugin2_info);
-
-	/* Function pointers set by PL/pgSQL itself */
-	void		(*error_callback) (void *arg);
-	void		(*assign_expr) (PLpgSQL_execstate *estate,
-								PLpgSQL_datum *target,
-								PLpgSQL_expr *expr);
-
-	void		(*assign_value) (PLpgSQL_execstate *estate,
-								 PLpgSQL_datum *target,
-								 Datum value, bool isNull,
-								 Oid valtype, int32 valtypmod);
-	void		(*eval_datum) (PLpgSQL_execstate *estate, PLpgSQL_datum *datum,
-							   Oid *typeId, int32 *typetypmod,
-							   Datum *value, bool *isnull);
-	Datum		(*cast_value) (PLpgSQL_execstate *estate,
-							   Datum value, bool *isnull,
-							   Oid valtype, int32 valtypmod,
-							   Oid reqtype, int32 reqtypmod);
-} plpgsql_check_plugin2;
-
-extern void plpgsql_check_register_pldbgapi2_plugin(plpgsql_check_plugin2 *plugin2);
-extern void plpgsql_check_init_pldbgapi2(void);
-
-extern plpgsql_check_plugin2_stmt_info * plpgsql_check_get_current_stmt_info(int stmtid);
-
-extern plpgsql_check_plugin2_stmt_info * plpgsql_check_get_current_stmts_info(void);
-extern plpgsql_check_plugin2_stmt_info * plpgsql_check_get_stmts_info(PLpgSQL_function *func);
-
-extern int *plpgsql_check_get_current_stmtid_map(void);
-extern int *plpgsql_check_get_stmtid_map(PLpgSQL_function *func);
-
-extern char *plpgsql_check_get_current_func_info_name(void);
-extern char *plpgsql_check_get_current_func_info_signature(void);
-extern MemoryContext plpgsql_check_get_current_fn_mcxt(void);
-
-#if PG_VERSION_NUM < 150000
-
-extern void plpgsql_check_finish_pldbgapi2(void);
-
-#endif
-
-/*
- * functions from cursors_leaks.c
- */
-extern bool plpgsql_check_cursors_leaks;
-extern bool plpgsql_check_cursors_leaks_strict;
-extern int	plpgsql_check_cursors_leaks_level;
-
-extern void plpgsql_check_cursors_leaks_init(void);
-
-/*
  * functions and structures from fextra_cache.c
  */
 typedef struct
@@ -509,7 +432,6 @@ typedef struct
 	TransactionId fn_xmin;
 	ItemPointerData fn_tid;
 } plch_fextra_hk;
-
 
 typedef struct
 {
@@ -525,8 +447,11 @@ typedef struct
 
 	int		   *parentids;
 	int		   *naturalids;
+	bool	   *invisible;
+	int		   *natural_to_ids;
 	int		   *levels;
 	bool	   *containers;
+	const char **stmt_typenames;
 	int			max_deep;
 	int			nstatements;
 
@@ -539,9 +464,63 @@ void plch_release_fextra(plch_fextra *fextra);
 
 #if PG_VERSION_NUM < 150000
 
-void plch_fextra_deinit();
+extern void plch_fextra_deinit(void);
 
 #endif
+
+/*
+ * functions from pldbgapi3
+ */
+typedef struct plch_plugin
+{
+	/* Function pointers set up by the plugin */
+	bool		(*is_active) (PLpgSQL_execstate *estate, PLpgSQL_function *func);
+	void		(*func_setup) (PLpgSQL_execstate *estate, PLpgSQL_function *func, plch_fextra *fextra);
+	void		(*func_beg) (PLpgSQL_execstate *estate, PLpgSQL_function *func, plch_fextra *fextra);
+	void		(*func_end) (PLpgSQL_execstate *estate, PLpgSQL_function *func, plch_fextra *fextra);
+	void		(*func_abort) (PLpgSQL_execstate *estate, PLpgSQL_function *func, plch_fextra *fextra);
+	void		(*stmt_beg) (PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt, plch_fextra *fextra);
+	void		(*stmt_end) (PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt, plch_fextra *fextra);
+	void		(*stmt_abort) (PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt, plch_fextra *fextra);
+
+	/* Function pointers set by PL/pgSQL itself */
+	void		(*error_callback) (void *arg);
+	void		(*assign_expr) (PLpgSQL_execstate *estate,
+								PLpgSQL_datum *target,
+								PLpgSQL_expr *expr);
+	void		(*assign_value) (PLpgSQL_execstate *estate,
+								 PLpgSQL_datum *target,
+								 Datum value, bool isNull,
+								 Oid valtype, int32 valtypmod);
+	void		(*eval_datum) (PLpgSQL_execstate *estate, PLpgSQL_datum *datum,
+							   Oid *typeId, int32 *typetypmod,
+							   Datum *value, bool *isnull);
+	Datum		(*cast_value) (PLpgSQL_execstate *estate,
+							   Datum value, bool *isnull,
+							   Oid valtype, int32 valtypmod,
+							   Oid reqtype, int32 reqtypmod);
+} plch_plugin;
+
+extern void plch_init_plugin(void);
+extern void plch_register_plugin(plch_plugin *plugin);
+
+#if PG_VERSION_NUM < 150000
+
+extern void plch_finish_plugin(void);
+
+#endif
+
+extern void simple_plugin_init(void);
+
+/*
+ * functions from cursors_leaks.c
+ */
+extern bool plpgsql_check_cursors_leaks;
+extern bool plpgsql_check_cursors_leaks_strict;
+extern int	plpgsql_check_cursors_leaks_level;
+
+extern void plpgsql_check_cursors_leaks_init(void);
+
 
 /*
  * functions from plpgsql_check.c
