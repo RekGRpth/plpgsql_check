@@ -437,6 +437,7 @@ typedef struct
 {
 	plch_fextra_hk hk;
 	uint32		hashValue;
+	PLpgSQL_function *func;
 
 	Oid			fn_oid;
 	char	   *fn_signature;
@@ -447,11 +448,8 @@ typedef struct
 
 	int		   *parentids;
 	int		   *naturalids;
-	bool	   *invisible;
 	int		   *natural_to_ids;
 	int		   *levels;
-	bool	   *containers;
-	const char **stmt_typenames;
 	int			max_deep;
 	int			nstatements;
 

@@ -18,9 +18,10 @@
  *
  * pldbgapi3 enhancing pl debug API and implementation allows to register
  * more plugins. Against previous implementation (pldbgapi2), it doesn't
- * use fmgr API. Cleaning after an exception is implemented by usage memory
- * context reset callback. The main advantage of this design is possibility
- * to access function's runtime data, that are accesible at this time.
+ * use fmgr API. Cleaning statement stack after an exception is implemented
+ * by usage memory context reset callback. The main advantage of this design
+ * is possibility to access function's runtime data, that are accesible at this
+ * time.
  *
  *
  */
@@ -43,17 +44,25 @@ typedef struct plpgsql_plugin_info
 	/* for assertations */
 	Oid			fn_oid;
 	PLpgSQL_execstate *estate;
-	int			use_count;
 
 	plch_fextra *fextra;
 
 	void	   *plugin_info[MAX_PLUGINS];
 	bool		is_active[MAX_PLUGINS];
 
+	/*
+	 * This array holds a stack of opened statements. It is the base
+	 * for calling stmt_abort callback.
+	 */
 	PLpgSQL_stmt **stmts_stack;
 	int			stmts_stack_size;
 
-	/* preallocation */
+	/*
+	 * This array holds a statements, that should be removed
+	 * from stmts_stack. It can be used inside a exception, and
+	 * then can be dangerous to allocate memory. So this array
+	 * is preallocated.
+	 */
 	PLpgSQL_stmt **stmts_buf;
 
 	MemoryContextCallback er_mcb;
@@ -91,6 +100,14 @@ NULL, NULL
 
 static PLpgSQL_plugin *prev_plpgsql_plugin = NULL;
 
+/*
+ * For all statements from buffer for all plugins calls
+ * stmt_abort callback. This can be used on stmts_stack
+ * and then it is processed from top, or can be used stmts_buf,
+ * and then it is processed from bottom. In this case, the
+ * statement order is inverted when statements are copied from
+ * stmts_stack to stmts_buf.
+ */
 static void
 abort_statements(PLpgSQL_stmt **stmts, int nstmts,
 				 plpgsql_plugin_info *plugin_info,
@@ -130,23 +147,34 @@ abort_statements(PLpgSQL_stmt **stmts, int nstmts,
 	}
 }
 
+/*
+ * This callback function is called when MemoryContext used for
+ * function execution state is released. It is called after any
+ * type of function ending - end or abort. We don't want to call
+ * func_abort after correct ending. The flag is plugin_info->fextra.
+ * When is released already, then function was correctly ended.
+ */
 static void
 plugin_info_reset(void *arg)
 {
 	plpgsql_plugin_info *plugin_info = (plpgsql_plugin_info*) arg;
 	MemoryContext exec_mcxt = CurrentMemoryContext;
-	int			stmts_stack_size = plugin_info->stmts_stack_size;
+	int			stmts_stack_size;
 	int			i;
 
-	plugin_info->stmts_stack_size = 0;
+	/* The memory should not be corrupted! */
+	Assert(plugin_info->magic == PLUGIN_INFO_MAGIC);
 
 	/*
-	 * PostgreSQL 19 can reset this callback. But we need to support
+	 * PostgreSQL 19 can remove this callback. But we need to support
 	 * previous releases, so when fextra is already released, then
-	 * do nothing here.
+	 * do just nothing here.
 	 */
 	if (!plugin_info->fextra)
 		return;
+
+	stmts_stack_size = plugin_info->stmts_stack_size;
+	plugin_info->stmts_stack_size = 0;
 
 	PG_TRY();
 	{
@@ -182,7 +210,8 @@ plugin_info_reset(void *arg)
 }
 
 /*
- *
+ * for all active plugins and prev_plpgsql_plugins calls func_setup,
+ * and when some plugin is active, prepares fextra.
  */
 static void
 func_setup(PLpgSQL_execstate *estate, PLpgSQL_function *func)
@@ -194,17 +223,6 @@ func_setup(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 	plugin_info->magic = PLUGIN_INFO_MAGIC;
 	plugin_info->fn_oid = func->fn_oid;
 	plugin_info->estate = estate;
-
-
-#if PG_VERSION_NUM >= 180000
-
-	plugin_info->use_count = func->cfunc.use_count;
-
-#else
-
-	plugin_info->use_count = func->use_count;
-
-#endif
 
 	for (i = 0; i < nplugins; i++)
 	{
@@ -291,6 +309,9 @@ func_setup(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 	estate->plugin_info = plugin_info;
 }
 
+/*
+ * for all active plugins and prev_plpgsql_plugins calls func_beg
+ */
 static void
 func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 {
@@ -304,31 +325,23 @@ func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 	Assert(plugin_info->estate == estate);
 	Assert(plugin_info->fn_oid == func->fn_oid);
 
-#if PG_VERSION_NUM >= 180000
-
-	Assert(plugin_info->use_count == func->cfunc.use_count);
-
-#else
-
-	Assert(plugin_info->use_count == func->use_count);
-
-#endif
-
-	if (!plugin_info->fextra)
-		return;
-
 	PG_TRY();
 	{
-		for (i = 0; i < nplugins; i++)
+		if (plugin_info->fextra)
 		{
-			if (plugin_info->is_active[i] && plugins[i]->func_beg)
-			{
-				estate->plugin_info = plugin_info->plugin_info[i];
-				plugins[i]->func_beg(estate, func, plugin_info->fextra);
-				plugin_info->plugin_info[i] = estate->plugin_info;
+			Assert(plugin_info->fextra->fn_oid == plugin_info->fn_oid);
 
-				/* force original memory context */
-				MemoryContextSwitchTo(exec_mcxt);
+			for (i = 0; i < nplugins; i++)
+			{
+				if (plugin_info->is_active[i] && plugins[i]->func_beg)
+				{
+					estate->plugin_info = plugin_info->plugin_info[i];
+					plugins[i]->func_beg(estate, func, plugin_info->fextra);
+					plugin_info->plugin_info[i] = estate->plugin_info;
+
+					/* force original memory context */
+					MemoryContextSwitchTo(exec_mcxt);
+				}
 			}
 		}
 
@@ -350,12 +363,14 @@ func_beg(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 	estate->plugin_info = plugin_info;
 }
 
+/*
+ * for all active plugins and prev_plpgsql_plugins calls func_end
+ */
 static void
 func_end(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 {
 	plpgsql_plugin_info *plugin_info = estate->plugin_info;
 	MemoryContext exec_mcxt = CurrentMemoryContext;
-	int			naborted_stmts;
 	int			i;
 
 	if (!plugin_info || plugin_info->magic != PLUGIN_INFO_MAGIC)
@@ -364,36 +379,29 @@ func_end(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 	Assert(plugin_info->estate == estate);
 	Assert(plugin_info->fn_oid == func->fn_oid);
 
-#if PG_VERSION_NUM >= 180000
-
-	Assert(plugin_info->use_count == func->cfunc.use_count);
-
-#else
-
-	Assert(plugin_info->use_count == func->use_count);
-
-#endif
-
-	if (!plugin_info->fextra)
-		return;
-
-	naborted_stmts = plugin_info->stmts_stack_size;
-	plugin_info->stmts_stack_size = 0;
-
 	PG_TRY();
 	{
-		abort_statements(plugin_info->stmts_stack,
-						 naborted_stmts,
-						 plugin_info, true);
-
-		for (i = 0; i < nplugins; i++)
+		if (plugin_info->fextra)
 		{
-			if (plugin_info->is_active[i] && plugins[i]->func_end)
+			int naborted_stmts = plugin_info->stmts_stack_size;
+
+			Assert(plugin_info->fextra->fn_oid == plugin_info->fn_oid);
+
+			plugin_info->stmts_stack_size = 0;
+
+			abort_statements(plugin_info->stmts_stack,
+							 naborted_stmts,
+							 plugin_info, true);
+
+			for (i = 0; i < nplugins; i++)
 			{
-				estate->plugin_info = plugin_info->plugin_info[i];
-				MemoryContextSwitchTo(exec_mcxt);
-				plugins[i]->func_end(estate, func, plugin_info->fextra);
-				plugin_info->plugin_info[i] = estate->plugin_info;
+				if (plugin_info->is_active[i] && plugins[i]->func_end)
+				{
+					estate->plugin_info = plugin_info->plugin_info[i];
+					MemoryContextSwitchTo(exec_mcxt);
+					plugins[i]->func_end(estate, func, plugin_info->fextra);
+					plugin_info->plugin_info[i] = estate->plugin_info;
+				}
 			}
 		}
 
@@ -428,6 +436,9 @@ func_end(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 	}
 }
 
+/*
+ * for all active plugins and prev_plpgsql_plugins calls stmt_beg
+ */
 static void
 stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 {
@@ -442,53 +453,48 @@ stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 	Assert(plugin_info->estate == estate);
 	Assert(plugin_info->fn_oid == estate->func->fn_oid);
 
-#if PG_VERSION_NUM >= 180000
-
-	Assert(plugin_info->use_count == estate->func->cfunc.use_count);
-
-#else
-
-	Assert(plugin_info->use_count == estate->func->use_count);
-
-#endif
-
-	if (!plugin_info->fextra)
-		return;
-
-	if (estate->cur_error)
+	if (plugin_info->fextra)
 	{
-		/*
-		 * Only inside error handler we need reduce statements
-		 * from stacks, because stmt_end was skipped due some
-		 * exception. All statements until parent of current
-		 * statements should be closed.
-		 */
-		int		cur_parentid = plugin_info->fextra->parentids[stmt->stmtid];
-
-		while (plugin_info->stmts_stack_size > 0 &&
-			   plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1]->stmtid != cur_parentid)
+		if (estate->cur_error)
 		{
-			plugin_info->stmts_buf[naborted_stmts++] = plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1];
-			plugin_info->stmts_stack_size--;
-		}
-	}
+			/*
+			 * Only inside error handler we need reduce statements
+			 * from stacks, because stmt_end was skipped due some
+			 * exception. All statements until parent of current
+			 * statements should be closed.
+			 */
+			int		cur_parentid = plugin_info->fextra->parentids[stmt->stmtid];
 
-	plugin_info->stmts_stack[plugin_info->stmts_stack_size++] = stmt;
+			while (plugin_info->stmts_stack_size > 0 &&
+				   plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1]->stmtid != cur_parentid)
+			{
+				plugin_info->stmts_buf[naborted_stmts++] = plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1];
+				plugin_info->stmts_stack_size--;
+			}
+		}
+
+		plugin_info->stmts_stack[plugin_info->stmts_stack_size++] = stmt;
+	}
 
 	PG_TRY();
 	{
-		abort_statements(plugin_info->stmts_buf,
-						 naborted_stmts,
-						 plugin_info, false);
-
-		for (i = 0; i < nplugins; i++)
+		if (plugin_info->fextra)
 		{
-			if (plugin_info->is_active[i] && plugins[i]->stmt_beg)
+			Assert(plugin_info->fextra->fn_oid == plugin_info->fn_oid);
+
+			abort_statements(plugin_info->stmts_buf,
+							 naborted_stmts,
+							 plugin_info, false);
+
+			for (i = 0; i < nplugins; i++)
 			{
-				estate->plugin_info = plugin_info->plugin_info[i];
-				MemoryContextSwitchTo(exec_mcxt);
-				plugins[i]->stmt_beg(estate, stmt, plugin_info->fextra);
-				plugin_info->plugin_info[i] = estate->plugin_info;
+				if (plugin_info->is_active[i] && plugins[i]->stmt_beg)
+				{
+					estate->plugin_info = plugin_info->plugin_info[i];
+					MemoryContextSwitchTo(exec_mcxt);
+					plugins[i]->stmt_beg(estate, stmt, plugin_info->fextra);
+					plugin_info->plugin_info[i] = estate->plugin_info;
+				}
 			}
 		}
 
@@ -511,6 +517,9 @@ stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 	estate->plugin_info = plugin_info;
 }
 
+/*
+ * for all active plugins and prev_plpgsql_plugins calls stmt_end
+ */
 static void
 stmt_end(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 {
@@ -525,50 +534,45 @@ stmt_end(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt)
 	Assert(plugin_info->estate == estate);
 	Assert(plugin_info->fn_oid == estate->func->fn_oid);
 
-#if PG_VERSION_NUM >= 180000
-
-	Assert(plugin_info->use_count == estate->func->cfunc.use_count);
-
-#else
-
-	Assert(plugin_info->use_count == estate->func->use_count);
-
-#endif
-
-	if (!plugin_info->fextra)
-		return;
-
-	Assert(plugin_info->stmts_stack_size > 0);
-
-	/*
-	 * After NULL exception handler, we need to close statements in stmt_end
-	 */
-	while (plugin_info->stmts_stack_size > 0 &&
-		   stmt->stmtid != plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1]->stmtid)
+	if (plugin_info->fextra)
 	{
-		plugin_info->stmts_buf[naborted_stmts++] = plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1];
+		Assert(plugin_info->stmts_stack_size > 0);
+
+		/*
+		 * After NULL exception handler, we need to close statements in stmt_end
+		 */
+		while (plugin_info->stmts_stack_size > 0 &&
+			   stmt->stmtid != plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1]->stmtid)
+		{
+			plugin_info->stmts_buf[naborted_stmts++] = plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1];
+			plugin_info->stmts_stack_size--;
+		}
+
+		Assert(plugin_info->stmts_stack_size > 0);
+		Assert(plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1]->stmtid == stmt->stmtid);
+
 		plugin_info->stmts_stack_size--;
 	}
 
-	Assert(plugin_info->stmts_stack_size > 0);
-	Assert(plugin_info->stmts_stack[plugin_info->stmts_stack_size - 1]->stmtid == stmt->stmtid);
-
-	plugin_info->stmts_stack_size--;
-
 	PG_TRY();
 	{
-		abort_statements(plugin_info->stmts_buf,
-						 naborted_stmts,
-						 plugin_info, false);
-
-		for (i = 0; i < nplugins; i++)
+		if (plugin_info->fextra)
 		{
-			if (plugin_info->is_active[i] && plugins[i]->stmt_end)
+			Assert(plugin_info->fextra->fn_oid == plugin_info->fn_oid);
+
+			abort_statements(plugin_info->stmts_buf,
+							 naborted_stmts,
+							 plugin_info, false);
+
+			for (i = 0; i < nplugins; i++)
 			{
-				estate->plugin_info = plugin_info->plugin_info[i];
-				MemoryContextSwitchTo(exec_mcxt);
-				plugins[i]->stmt_end(estate, stmt, plugin_info->fextra);
-				plugin_info->plugin_info[i] = estate->plugin_info;
+				if (plugin_info->is_active[i] && plugins[i]->stmt_end)
+				{
+					estate->plugin_info = plugin_info->plugin_info[i];
+					MemoryContextSwitchTo(exec_mcxt);
+					plugins[i]->stmt_end(estate, stmt, plugin_info->fextra);
+					plugin_info->plugin_info[i] = estate->plugin_info;
+				}
 			}
 		}
 
