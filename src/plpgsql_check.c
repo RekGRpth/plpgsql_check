@@ -193,16 +193,6 @@ plpgsql_check_check_ext_version(Oid fn_oid)
 	StaticAssertVariableIsOfType(&plpgsql_recognize_err_condition, plpgsql_check__recognize_err_condition_t);
 	StaticAssertVariableIsOfType(&plpgsql_ns_lookup, plpgsql_check__ns_lookup_t);
 
-#else
-
-//	AssertVariableIsOfType(&plpgsql_build_datatype, plpgsql_check__build_datatype_t);
-//	AssertVariableIsOfType(&plpgsql_compile, plpgsql_check__compile_t);
-//	AssertVariableIsOfType(&plpgsql_parser_setup, plpgsql_check__parser_setup_t);
-//	AssertVariableIsOfType(&plpgsql_stmt_typename, plpgsql_check__stmt_typename_t);
-//	AssertVariableIsOfType(&plpgsql_exec_get_datum_type, plpgsql_check__exec_get_datum_type_t);
-//	AssertVariableIsOfType(&plpgsql_recognize_err_condition, plpgsql_check__recognize_err_condition_t);
-//	AssertVariableIsOfType(&plpgsql_ns_lookup, plpgsql_check__ns_lookup_t);
-
 #endif
 
 
@@ -215,7 +205,6 @@ plpgsql_check_check_ext_version(Oid fn_oid)
 void
 _PG_init(void)
 {
-
 	/* Be sure we do initialization only once (should be redundant now) */
 	static bool inited = false;
 
@@ -461,7 +450,6 @@ _PG_init(void)
 	/* Use shared memory when we can register more for self */
 	if (process_shared_preload_libraries_in_progress)
 	{
-
 		DefineCustomIntVariable("plpgsql_check.profiler_max_shared_chunks",
 								"maximum numbers of statements chunks in shared memory",
 								NULL,
@@ -499,17 +487,15 @@ _PG_init(void)
 	}
 
 	plch_init_plugin();
-	//simple_plugin_init();
-
 
 	plpgsql_check_passive_check_init();
 	plpgsql_check_profiler_init();
 	plpgsql_check_tracer_init();
 	plpgsql_check_cursors_leaks_init();
 
-
 #if PG_VERSION_NUM >= 180000
 
+	/* used for checking expected version of SQL interface (extension) */
 	CacheRegisterSyscacheCallback(EXTENSIONOID,
 								  pg_extension_cache_callback,
 								  (Datum) 0);
