@@ -1804,11 +1804,22 @@ profiler_get_queryid(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt,
 static void
 profiler_fake_queryid_hook(ParseState *pstate, Query *query, JumbleState *jstate)
 {
-	(void) jstate;
-	(void) pstate;
+	if (prev_post_parse_analyze_hook)
+		prev_post_parse_analyze_hook(pstate, query, jstate);
 
-	Assert(query->queryId == NOQUERYID);
-
+	/*
+	 * force fake queryid
+	 *
+	 * profiler_fake_queryid_hook is active only for one plpgsql_check
+	 * regress test. For this case, we can force fake queryid, althought
+	 * is possible, so real queryid (computed by pg_stat_statements) is
+	 * already computed.
+	 *
+	 * Because this fake queryid hook is designed only for one test,
+	 * I don't check this possibility, and I don't raise any warning (because
+	 * it breaks stability of plpgsql_check regress tests - in dependency
+	 * on active (or non active) pg_stat_statements).
+	 */
 	query->queryId = query->commandType;
 }
 
