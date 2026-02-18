@@ -60,27 +60,36 @@ tests = [ 'plpgsql_check_active',
           'plpgsql_check_active-'  + pg_version_major.to_string(),
           'plpgsql_check_passive-' + pg_version_major.to_string() ]
 
-compilerName = meson.get_compiler('c').get_id()
+compiler = meson.get_compiler('c')
 
-if meson.get_compiler('c').get_id() == 'msvc'
+compiler_name = compiler.get_id()
+compiler_version = compiler.version()
+
+if compiler_name == 'msvc'
   incdir = [includedir_server / 'port/win32_msvc',
             includedir_server / 'port/win32',
             includedir_server,
             includedir]
-  postgres_lib = meson.get_compiler('c').find_library(
-                                           'postgres',
-                                            dirs: libdir,
-                                            static: true,
-                                            required: true
-                                         )
+  postgres_lib = compiler.find_library( 'postgres',
+                                        dirs: libdir,
+                                        static: true,
+                                        required: true )
 else
   incdir = [ includedir_server ]
   postgres_lib = []
 endif
 
+if compiler_name == 'gcc' and compiler_version.startswith('15.')
+  # see issue 207
+  cargs = ['-Wno-error=incompatible-pointer-types', '--no-warnings' ]
+else
+  cargs = []
+endif
+
 module_lib = shared_module(
   module_name,
   sources,
+  c_args: cargs,
   include_directories: incdir,
   install: true,
   install_dir: pkglibdir,
