@@ -79,7 +79,7 @@ else
   postgres_lib = []
 endif
 
-if compiler_name == 'gcc' and compiler_version.startswith('15.')
+if compiler_name == 'gcc' and pg_version_major <= 15
   # see issue 207
   cargs = ['-Wno-error=incompatible-pointer-types', '--no-warnings' ]
 else
