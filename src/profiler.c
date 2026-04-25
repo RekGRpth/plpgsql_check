@@ -190,7 +190,6 @@ PG_FUNCTION_INFO_V1(plpgsql_profiler_install_fake_queryid_hook);
 PG_FUNCTION_INFO_V1(plpgsql_profiler_remove_fake_queryid_hook);
 
 static void update_persistent_profile(profiler_info *pinfo, PLpgSQL_function *func, const int *stmtid_map);
-static PLpgSQL_expr *profiler_get_expr(PLpgSQL_stmt *stmt, bool *dynamic, List **params);
 static pc_queryid profiler_get_queryid(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt, bool *has_queryid, query_params **qparams);
 
 #if PG_VERSION_NUM >= 190000
@@ -538,62 +537,6 @@ increment_branch_counter(coverage_state *cs, int64 executed)
 
 #define IS_PLPGSQL_STMT(stmt, typ)		(stmt->cmd_type == typ)
 
-static bool
-is_cycle(PLpgSQL_stmt *stmt)
-{
-	switch (stmt->cmd_type)
-	{
-		case PLPGSQL_STMT_LOOP:
-		case PLPGSQL_STMT_FORI:
-		case PLPGSQL_STMT_FORS:
-		case PLPGSQL_STMT_FORC:
-		case PLPGSQL_STMT_DYNFORS:
-		case PLPGSQL_STMT_FOREACH_A:
-		case PLPGSQL_STMT_WHILE:
-			return true;
-		default:
-			return false;
-	}
-}
-
-/*
- * Returns statements assigned to cycle's body
- */
-static List *
-get_cycle_body(PLpgSQL_stmt *stmt)
-{
-	List	   *stmts;
-
-	switch (stmt->cmd_type)
-	{
-		case PLPGSQL_STMT_WHILE:
-			stmts = ((PLpgSQL_stmt_while *) stmt)->body;
-			break;
-		case PLPGSQL_STMT_LOOP:
-			stmts = ((PLpgSQL_stmt_loop *) stmt)->body;
-			break;
-		case PLPGSQL_STMT_FORI:
-			stmts = ((PLpgSQL_stmt_fori *) stmt)->body;
-			break;
-		case PLPGSQL_STMT_FORS:
-			stmts = ((PLpgSQL_stmt_fors *) stmt)->body;
-			break;
-		case PLPGSQL_STMT_FORC:
-			stmts = ((PLpgSQL_stmt_forc *) stmt)->body;
-			break;
-		case PLPGSQL_STMT_DYNFORS:
-			stmts = ((PLpgSQL_stmt_dynfors *) stmt)->body;
-			break;
-		case PLPGSQL_STMT_FOREACH_A:
-			stmts = ((PLpgSQL_stmt_foreach_a *) stmt)->body;
-			break;
-		default:
-			stmts = NIL;
-			break;
-	}
-
-	return stmts;
-}
 
 /*
  * profiler_stmt_walker - iterator over plpgsql statements.
@@ -698,9 +641,9 @@ profiler_stmt_walker(profiler_info *pinfo,
 		}
 	}
 
-	if (is_cycle(stmt))
+	if (plch_statement_is_loop(stmt))
 	{
-		stmts = get_cycle_body(stmt);
+		stmts = plch_statement_get_loop_body(stmt);
 
 		stmts_walker(pinfo, mode,
 					 stmts, stmt, "loop body",
@@ -1513,120 +1456,6 @@ stmts_walker(profiler_info *pinfo,
 		opts->nested_exec_count = nested_exec_count;
 }
 
-/*
- * Given a PLpgSQL_stmt, return the underlying PLpgSQL_expr that may contain a
- * queryid.
- */
-static PLpgSQL_expr *
-profiler_get_expr(PLpgSQL_stmt *stmt, bool *dynamic, List **params)
-{
-	PLpgSQL_expr *expr = NULL;
-
-	*params = NIL;
-	*dynamic = false;
-
-	switch (stmt->cmd_type)
-	{
-		case PLPGSQL_STMT_ASSIGN:
-			expr = ((PLpgSQL_stmt_assign *) stmt)->expr;
-			break;
-		case PLPGSQL_STMT_PERFORM:
-			expr = ((PLpgSQL_stmt_perform *) stmt)->expr;
-			break;
-		case PLPGSQL_STMT_CALL:
-			expr = ((PLpgSQL_stmt_call *) stmt)->expr;
-			break;
-		case PLPGSQL_STMT_IF:
-			expr = ((PLpgSQL_stmt_if *) stmt)->cond;
-			break;
-		case PLPGSQL_STMT_CASE:
-			expr = ((PLpgSQL_stmt_case *) stmt)->t_expr;
-			break;
-		case PLPGSQL_STMT_WHILE:
-			expr = ((PLpgSQL_stmt_while *) stmt)->cond;
-			break;
-		case PLPGSQL_STMT_FORC:
-			expr = ((PLpgSQL_stmt_forc *) stmt)->argquery;
-			break;
-		case PLPGSQL_STMT_FORS:
-			expr = ((PLpgSQL_stmt_fors *) stmt)->query;
-			break;
-		case PLPGSQL_STMT_DYNFORS:
-			expr = ((PLpgSQL_stmt_dynfors *) stmt)->query;
-			*params = ((PLpgSQL_stmt_dynfors *) stmt)->params;
-			*dynamic = true;
-			break;
-		case PLPGSQL_STMT_FOREACH_A:
-			expr = ((PLpgSQL_stmt_foreach_a *) stmt)->expr;
-			break;
-		case PLPGSQL_STMT_FETCH:
-			expr = ((PLpgSQL_stmt_fetch *) stmt)->expr;
-			break;
-		case PLPGSQL_STMT_EXIT:
-			expr = ((PLpgSQL_stmt_exit *) stmt)->cond;
-			break;
-		case PLPGSQL_STMT_RETURN:
-			expr = ((PLpgSQL_stmt_return *) stmt)->expr;
-			break;
-		case PLPGSQL_STMT_RETURN_NEXT:
-			expr = ((PLpgSQL_stmt_return_next *) stmt)->expr;
-			break;
-		case PLPGSQL_STMT_RETURN_QUERY:
-			{
-				PLpgSQL_stmt_return_query *q;
-
-				q = (PLpgSQL_stmt_return_query *) stmt;
-				if (q->query)
-					expr = q->query;
-				else
-				{
-					expr = q->dynquery;
-					*params = q->params;
-					*dynamic = true;
-				}
-			}
-			break;
-		case PLPGSQL_STMT_ASSERT:
-			expr = ((PLpgSQL_stmt_assert *) stmt)->cond;
-			break;
-		case PLPGSQL_STMT_EXECSQL:
-			expr = ((PLpgSQL_stmt_execsql *) stmt)->sqlstmt;
-			break;
-		case PLPGSQL_STMT_DYNEXECUTE:
-			expr = ((PLpgSQL_stmt_dynexecute *) stmt)->query;
-			*params = ((PLpgSQL_stmt_dynexecute *) stmt)->params;
-			*dynamic = true;
-			break;
-		case PLPGSQL_STMT_OPEN:
-			{
-				PLpgSQL_stmt_open *o;
-
-				o = (PLpgSQL_stmt_open *) stmt;
-				if (o->query)
-					expr = o->query;
-				else if (o->dynquery)
-				{
-					expr = o->dynquery;
-					*params = o->params;
-					*dynamic = true;
-				}
-				else
-					expr = o->argquery;
-			}
-		case PLPGSQL_STMT_BLOCK:
-		case PLPGSQL_STMT_COMMIT:
-		case PLPGSQL_STMT_ROLLBACK:
-		case PLPGSQL_STMT_GETDIAG:
-		case PLPGSQL_STMT_LOOP:
-		case PLPGSQL_STMT_FORI:
-		case PLPGSQL_STMT_RAISE:
-		case PLPGSQL_STMT_CLOSE:
-			break;
-	}
-
-	return expr;
-}
-
 static pc_queryid
 profiler_get_dyn_queryid(PLpgSQL_execstate *estate, PLpgSQL_expr *expr, query_params *qparams)
 {
@@ -1770,7 +1599,7 @@ profiler_get_queryid(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt,
 	List	   *params;
 	List	   *plan_sources;
 
-	expr = profiler_get_expr(stmt, &dynamic, &params);
+	expr = plch_statement_get_expr(stmt, &dynamic, &params, NULL);
 	*has_queryid = (expr != NULL);
 
 	/* fast leaving, when expression has not assigned plan */

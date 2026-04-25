@@ -1235,30 +1235,6 @@ tracer_stmt_beg(PLpgSQL_execstate *estate,
 	}
 }
 
-/*
- * Returns true when statement can contains another statements
- */
-static bool
-stmt_is_container(PLpgSQL_stmt *stmt)
-{
-	switch (stmt->cmd_type)
-	{
-		case PLPGSQL_STMT_BLOCK:
-		case PLPGSQL_STMT_IF:
-		case PLPGSQL_STMT_CASE:
-		case PLPGSQL_STMT_LOOP:
-		case PLPGSQL_STMT_FORI:
-		case PLPGSQL_STMT_FORS:
-		case PLPGSQL_STMT_FORC:
-		case PLPGSQL_STMT_DYNFORS:
-		case PLPGSQL_STMT_FOREACH_A:
-		case PLPGSQL_STMT_WHILE:
-			return true;
-		default:
-			return false;
-	}
-}
-
 static void
 _tracer_stmt_end(tracer_info *tinfo,
 				 plch_fextra *fextra,
@@ -1267,7 +1243,7 @@ _tracer_stmt_end(tracer_info *tinfo,
 {
 	const char *aborted = is_aborted ? " aborted" : "";
 	int			stmtid = stmt->stmtid;
-	bool		is_container = stmt_is_container(stmt);
+	bool		is_container = plch_statement_is_container(stmt);
 	bool		invisible = stmt->lineno < 1;
 
 	Assert(tinfo);
