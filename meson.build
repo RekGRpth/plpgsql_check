@@ -50,6 +50,7 @@ sources = files(
   'src/stmtwalk.c',
   'src/tracer.c',
   'src/fextra_cache.c',
+  'src/generic_stmt_walker.c',
 )
 
 data = [ module_name + '.control',

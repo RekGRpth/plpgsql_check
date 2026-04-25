@@ -523,6 +523,31 @@ extern int	plpgsql_check_cursors_leaks_level;
 
 extern void plpgsql_check_cursors_leaks_init(void);
 
+/*
+ * functions and definitions from generic_stmt_walker.c
+ */
+typedef void (*plch_stmt_walker_callback) (PLpgSQL_stmt *stmt, void *context);
+typedef void (*plch_expr_walker_callback) (PLpgSQL_stmt *stmt, PLpgSQL_expr *expr, void *context);
+
+/*
+ * As in nodeFuncs.h, we respectfully decline to support the C standard's
+ * position that a pointer to struct is incompatible with "void *".  Instead,
+ * silence related compiler warnings using casts in this macro wrapper.
+ */
+#define plch_statement_tree_walker(s, swb, swa, ew, c) \
+	plch_statement_tree_walker_impl(s, (plch_stmt_walker_callback) (sw), \
+									   (plch_expr_walker_callback) (ew), c)
+
+extern void plch_statement_tree_walker_impl(PLpgSQL_stmt *stmt,
+											plch_stmt_walker_callback stmt_callback,
+											plch_expr_walker_callback expr_callback,
+											void *context);
+
+extern bool plch_statement_is_loop(PLpgSQL_stmt *stmt);
+extern List *plch_statement_get_loop_body(PLpgSQL_stmt *stmt);
+extern bool plch_statement_is_container(PLpgSQL_stmt *stmt);
+extern PLpgSQL_expr *plch_statement_get_expr(PLpgSQL_stmt *stmt, bool *is_dynamic,
+											 List **params, const char **exprname);
 
 /*
  * functions from plpgsql_check.c
@@ -537,6 +562,9 @@ extern PLpgSQL_plugin **plpgsql_check_plugin_var_ptr;
 
 extern void plpgsql_check_check_ext_version(Oid fn_oid);
 extern void plpgsql_check_passive_check_init(void);
+
+
+
 
 /*
  * Links to function in plpgsql module
