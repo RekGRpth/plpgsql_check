@@ -25,150 +25,40 @@
 static HTAB *fextra_ht = NULL;
 static MemoryContext fextra_mcxt = NULL;
 
-static void
-init_fextra_stmt(plch_fextra *fextra,
-				int parentid, int *naturalid, int level, int cur_deep,
-				PLpgSQL_stmt *stmt);
-
-/*
- * Iterate over all plpgsql statements in the list
- */
-static void
-init_fextra_stmts(plch_fextra *fextra,
-				  int parentid, int *naturalid, int level, int cur_deep,
-				  List *stmts)
+typedef struct
 {
-	ListCell *lc;
+	plch_fextra *fextra;
+	int			parentid;
+	int			*naturalid;
+	int			current_deep;		/* starts from zero */
+} fextra_init_context;
 
-	foreach(lc, stmts)
-	{
-		init_fextra_stmt(fextra,
-						parentid, naturalid, level, cur_deep,
-						(PLpgSQL_stmt *) lfirst(lc));
-	}
-}
-
-/*
- * Iterate over statements tree, and set fextra fields
- */
 static void
-init_fextra_stmt(plch_fextra *fextra,
-				int parentid, int *naturalid, int level, int cur_deep,
-				PLpgSQL_stmt *stmt)
+init_fextra_stmt_walker(PLpgSQL_stmt *stmt, fextra_init_context *context)
 {
+	fextra_init_context loccontext;
+	plch_fextra *fextra = context->fextra;
 	int			stmtid = stmt->stmtid;
 
 	/*
 	 * statement ids are starts by one. For simplicity don't
 	 * change base to zero.
 	 */
-	fextra->parentids[stmtid] = parentid;
-	fextra->naturalids[stmtid] = ++(*naturalid);
-	fextra->levels[stmtid] = level++;
+	fextra->parentids[stmtid] = context->parentid;
+	fextra->naturalids[stmtid] = ++(*context->naturalid);
+	fextra->levels[stmtid] = context->current_deep + 1;
 
 	fextra->natural_to_ids[fextra->naturalids[stmtid] - 1] = stmtid;
 
-	if (cur_deep > fextra->max_deep)
-		fextra->max_deep = cur_deep;
+	if (context->current_deep > fextra->max_deep)
+		fextra->max_deep = context->current_deep;
 
-	cur_deep++;
+	loccontext.fextra = fextra;
+	loccontext.parentid = stmtid;
+	loccontext.naturalid = context->naturalid;
+	loccontext.current_deep = context->current_deep + 1;
 
-	switch (stmt->cmd_type)
-	{
-		case PLPGSQL_STMT_BLOCK:
-			{
-				PLpgSQL_stmt_block *s = (PLpgSQL_stmt_block *) stmt;
-
-				init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-								  s->body);
-
-				if (s->exceptions)
-				{
-					ListCell *lc;
-
-					foreach(lc, s->exceptions->exc_list)
-					{
-						init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-										  ((PLpgSQL_exception *) lfirst(lc))->action);
-					}
-				}
-			}
-			break;
-
-		case PLPGSQL_STMT_IF:
-			{
-				PLpgSQL_stmt_if *s = (PLpgSQL_stmt_if *) stmt;
-				ListCell *lc;
-
-				init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-								  s->then_body);
-
-				foreach(lc, s->elsif_list)
-				{
-					init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-									  ((PLpgSQL_if_elsif *) lfirst(lc))->stmts);
-				}
-
-				init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-								  s->else_body);
-			}
-			break;
-
-		case PLPGSQL_STMT_CASE:
-			{
-				PLpgSQL_stmt_case *s = (PLpgSQL_stmt_case *) stmt;
-				ListCell *lc;
-
-				foreach(lc, s->case_when_list)
-				{
-					init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-									  ((PLpgSQL_case_when *) lfirst(lc))->stmts);
-				}
-
-				init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-								  s->else_stmts);
-			}
-			break;
-
-		case PLPGSQL_STMT_LOOP:
-			init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-							  ((PLpgSQL_stmt_loop *) stmt)->body);
-			break;
-
-		case PLPGSQL_STMT_FORI:
-			init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-							  ((PLpgSQL_stmt_fori *) stmt)->body);
-			break;
-
-		case PLPGSQL_STMT_FORS:
-			init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-							  ((PLpgSQL_stmt_fors *) stmt)->body);
-			break;
-
-		case PLPGSQL_STMT_FORC:
-			init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-							  ((PLpgSQL_stmt_forc *) stmt)->body);
-			break;
-
-		case PLPGSQL_STMT_DYNFORS:
-			init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-							  ((PLpgSQL_stmt_dynfors *) stmt)->body);
-			break;
-
-		case PLPGSQL_STMT_FOREACH_A:
-			init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-							  ((PLpgSQL_stmt_foreach_a *) stmt)->body);
-			break;
-
-		case PLPGSQL_STMT_WHILE:
-			init_fextra_stmts(fextra, stmtid, naturalid, level, cur_deep,
-							  ((PLpgSQL_stmt_while *) stmt)->body);
-			break;
-
-		default:
-			/* all container statements are handled up */
-			break;
-	}
+	plch_statement_tree_walker(stmt, init_fextra_stmt_walker, NULL, &loccontext);
 }
 
 static void
@@ -322,6 +212,7 @@ plch_get_fextra(PLpgSQL_function *func)
 		char	   *fn_name = NULL;
 		char	   *fn_namespacename = NULL;
 		int			naturalid = 0;
+		fextra_init_context context;
 
 		if (func->fn_oid)
 		{
@@ -349,7 +240,13 @@ plch_get_fextra(PLpgSQL_function *func)
 		MemoryContextSwitchTo(oldcxt);
 
 		fextra->max_deep = 0;
-		init_fextra_stmt(fextra, 0, &naturalid, 1, 0, (PLpgSQL_stmt *) func->action);
+
+		context.fextra = fextra;
+		context.parentid = 0;
+		context.current_deep = 0;
+		context.naturalid = &naturalid;
+
+		init_fextra_stmt_walker((PLpgSQL_stmt *) func->action, &context);
 
 		fextra->func = func;
 

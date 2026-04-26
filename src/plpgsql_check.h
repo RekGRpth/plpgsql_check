@@ -534,7 +534,7 @@ typedef void (*plch_expr_walker_callback) (PLpgSQL_stmt *stmt, PLpgSQL_expr *exp
  * position that a pointer to struct is incompatible with "void *".  Instead,
  * silence related compiler warnings using casts in this macro wrapper.
  */
-#define plch_statement_tree_walker(s, swb, swa, ew, c) \
+#define plch_statement_tree_walker(s, sw, ew, c) \
 	plch_statement_tree_walker_impl(s, (plch_stmt_walker_callback) (sw), \
 									   (plch_expr_walker_callback) (ew), c)
 
