@@ -46,7 +46,7 @@
 
 PG_MODULE_MAGIC_EXT(
   .name = "plpgsql_check",
-  .version = "2.8.11"
+  .version = "2.9.0"
 );
 
 #else
@@ -140,7 +140,7 @@ pg_extension_cache_callback(Datum arg, int cacheid, uint32 hashvalue)
  */
 #define LOAD_EXTERNAL_FUNCTION(file, funcname)	((void *) (load_external_function(file, funcname, true, NULL)))
 
-#define EXPECTED_EXTVERSION		"2.8"
+#define EXPECTED_EXTVERSION		"2.9"
 
 void
 plpgsql_check_check_ext_version(Oid fn_oid)
@@ -441,6 +441,23 @@ _PG_init(void)
 							 PGC_USERSET, 0,
 							 NULL, NULL, NULL);
 
+	DefineCustomIntVariable("plpgsql_check.max_stats_size",
+							"Maximum used memory for profile statistics",
+							NULL,
+							&plch_max_stat_size,
+							20480,
+							64, 204800,
+							PGC_USERSET, GUC_UNIT_KB,
+							NULL, NULL, NULL);
+
+	DefineCustomBoolVariable("plpgsql_check.use_shared_stats_when_it_possible",
+							 "when is true, then profiler statistics are in shared memory (only when shared memory was preallocated)",
+							 NULL,
+							 &plch_use_shared_stats_when_it_possible,
+							 true,
+							 PGC_USERSET, 0,
+							 NULL, NULL, NULL);
+
 	EmitWarningsOnPlaceholders("plpgsql_check");
 
 	plpgsql_check_HashTableInit();
@@ -449,13 +466,6 @@ _PG_init(void)
 	/* Use shared memory when we can register more for self */
 	if (process_shared_preload_libraries_in_progress)
 	{
-		DefineCustomIntVariable("plpgsql_check.profiler_max_shared_chunks",
-								"maximum numbers of statements chunks in shared memory",
-								NULL,
-								&plpgsql_check_profiler_max_shared_chunks,
-								15000, 50, 100000,
-								PGC_POSTMASTER, 0,
-								NULL, NULL, NULL);
 
 #if PG_VERSION_NUM < 150000
 
