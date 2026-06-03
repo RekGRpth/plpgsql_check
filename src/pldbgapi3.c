@@ -92,22 +92,11 @@ static void stmt_beg(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt);
 static void stmt_end(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt);
 
 static PLpgSQL_plugin plpgsql_plugin = {
-	func_setup,
-	func_beg,
-	func_end,
-	stmt_beg,
-	stmt_end,
-
-#if PG_VERSION_NUM >= 150000
-
-NULL, NULL, NULL, NULL, NULL
-
-#else
-
-NULL, NULL
-
-#endif
-
+	.func_setup = func_setup,
+	.func_beg = func_beg,
+	.func_end = func_end,
+	.stmt_beg = stmt_beg,
+	.stmt_end = stmt_end
 };
 
 static PLpgSQL_plugin *prev_plpgsql_plugin = NULL;
@@ -207,17 +196,8 @@ plugin_info_reset(void *arg)
 	 */
 	memset(&loc_estate, 0, sizeof(PLpgSQL_execstate));
 
-#if PG_VERSION_NUM >= 180000
-
 	Assert(plugin_info->fextra->use_count > 0);
-	Assert(plugin_info->fextra->func->cfunc.use_count > 0);
-
-#else
-
-	Assert(plugin_info->fextra->use_count > 0);
-	Assert(plugin_info->fextra->func->use_count > 0);
-
-#endif
+	Assert(plch_use_count(plugin_info->fextra->func) > 0);
 
 	loc_estate.func = plugin_info->fextra->func;
 
@@ -300,6 +280,12 @@ func_setup(PLpgSQL_execstate *estate, PLpgSQL_function *func)
 		plugins[i]->assign_value = plpgsql_plugin.assign_value;
 		plugins[i]->eval_datum = plpgsql_plugin.eval_datum;
 		plugins[i]->cast_value = plpgsql_plugin.cast_value;
+
+#else
+
+		plugins[i]->assign_value = NULL;
+		plugins[i]->eval_datum = NULL;
+		plugins[i]->cast_value = NULL;
 
 #endif
 
