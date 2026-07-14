@@ -20,7 +20,7 @@
 static void SetReturningFunctionCheck(ReturnSetInfo *rsinfo);
 
 PG_FUNCTION_INFO_V1(plpgsql_check_function);
-PG_FUNCTION_INFO_V1(plch_generate_table_pragmas);
+PG_FUNCTION_INFO_V1(plpgsql_make_pragma);
 PG_FUNCTION_INFO_V1(plpgsql_check_function_tb);
 PG_FUNCTION_INFO_V1(plpgsql_show_dependency_tb);
 PG_FUNCTION_INFO_V1(plpgsql_profiler_function_tb);
@@ -241,17 +241,23 @@ check_function_internal(Oid fnoid, FunctionCallInfo fcinfo)
 	if (PG_GETARG_BOOL(18))
 		plpgsql_check_search_comment_options(&cinfo);
 
+	plpgsql_check_init_ri(&ri, format, rsinfo);
+
 	/* Envelope outer plpgsql function is not interesting */
 	prev_errorcontext = error_context_stack;
 	error_context_stack = NULL;
 
-	plpgsql_check_init_ri(&ri, format, rsinfo);
-
-	plpgsql_check_function_internal(&ri, &cinfo);
+	PG_TRY();
+	{
+		plpgsql_check_function_internal(&ri, &cinfo);
+	}
+	PG_FINALLY();
+	{
+		error_context_stack = prev_errorcontext;
+	}
+	PG_END_TRY();
 
 	plpgsql_check_finalize_ri(&ri);
-
-	error_context_stack = prev_errorcontext;
 
 	ReleaseSysCache(cinfo.proctuple);
 
@@ -386,17 +392,24 @@ check_function_tb_internal(Oid fnoid, FunctionCallInfo fcinfo)
 	if (PG_GETARG_BOOL(17))
 		plpgsql_check_search_comment_options(&cinfo);
 
+
+	plpgsql_check_init_ri(&ri, PLPGSQL_CHECK_FORMAT_TABULAR, rsinfo);
+
 	/* Envelope outer plpgsql function is not interesting */
 	prev_errorcontext = error_context_stack;
 	error_context_stack = NULL;
 
-	plpgsql_check_init_ri(&ri, PLPGSQL_CHECK_FORMAT_TABULAR, rsinfo);
-
-	plpgsql_check_function_internal(&ri, &cinfo);
+	PG_TRY();
+	{
+		plpgsql_check_function_internal(&ri, &cinfo);
+	}
+	PG_FINALLY();
+	{
+		error_context_stack = prev_errorcontext;
+	}
+	PG_END_TRY();
 
 	plpgsql_check_finalize_ri(&ri);
-
-	error_context_stack = prev_errorcontext;
 
 	ReleaseSysCache(cinfo.proctuple);
 
@@ -584,14 +597,14 @@ plpgsql_check_function_tb(PG_FUNCTION_ARGS)
 }
 
 /*
- * plch_generate_table_pragmas
+ * plpgsql_make_pragma
  *
  * Returns table pragmas generated for CREATE TEMP TABLE ... AS statements
  * used inside the function's body.
  *
  */
 Datum
-plch_generate_table_pragmas(PG_FUNCTION_ARGS)
+plpgsql_make_pragma(PG_FUNCTION_ARGS)
 {
 	plpgsql_check_info cinfo;
 	plpgsql_check_result_info ri;
@@ -620,7 +633,7 @@ plch_generate_table_pragmas(PG_FUNCTION_ARGS)
 
 	cinfo.relid = PG_GETARG_OID(1);
 	cinfo.fatal_errors = PG_GETARG_BOOL(2);
-	cinfo.generate_pragmas = true;
+	cinfo.make_pragma = true;
 
 	/* use the same defaults as plpgsql_check_function */
 	cinfo.anyelementoid = INT4OID;
@@ -643,17 +656,24 @@ plch_generate_table_pragmas(PG_FUNCTION_ARGS)
 	cinfo.all_warnings = false;
 	cinfo.without_warnings = false;
 
+	plpgsql_check_init_ri(&ri, PLPGSQL_CHECK_FORMAT_TEXT, rsinfo);
+
 	/* Envelope outer plpgsql function is not interesting */
 	prev_errorcontext = error_context_stack;
 	error_context_stack = NULL;
 
-	plpgsql_check_init_ri(&ri, PLPGSQL_CHECK_FORMAT_TEXT, rsinfo);
-
-	plpgsql_check_function_internal(&ri, &cinfo);
+	PG_TRY();
+	{
+		plpgsql_check_function_internal(&ri, &cinfo);
+	}
+	PG_FINALLY();
+	{
+		error_context_stack = prev_errorcontext;
+	}
+	PG_END_TRY();
 
 	plpgsql_check_finalize_ri(&ri);
 
-	error_context_stack = prev_errorcontext;
 
 	ReleaseSysCache(cinfo.proctuple);
 
