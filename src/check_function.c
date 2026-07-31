@@ -135,6 +135,10 @@ reports_used_rowtypes_dependency(PLpgSQL_function *func, PLpgSQL_checkstate *cst
 			Oid		typrelid;
 			char	relkind;
 
+			/* datatype can be NULL, when rectypeid is RECORDOID (trigger NEW/OLD) */
+			if (!rec->datatype)
+				continue;
+
 			typrelid = get_typ_typrelid(rec->datatype->typoid);
 			relkind = get_rel_relkind(typrelid);
 
@@ -148,9 +152,14 @@ reports_used_rowtypes_dependency(PLpgSQL_function *func, PLpgSQL_checkstate *cst
 												 get_namespace_name(get_rel_namespace(typrelid)),
 												 get_rel_name(typrelid),
 												 NULL);
+
+					cstate->rel_oids = bms_add_member(cstate->rel_oids, typrelid);
 				}
 				else if (relkind == RELKIND_RELATION ||
-						 relkind == RELKIND_PARTITIONED_TABLE)
+						 relkind == RELKIND_PARTITIONED_TABLE ||
+						 relkind == RELKIND_FOREIGN_TABLE ||
+						 relkind == RELKIND_VIEW ||
+						 relkind == RELKIND_MATVIEW)
 				{
 					plpgsql_check_put_dependency(ri,
 												 "RELATION",
@@ -158,19 +167,9 @@ reports_used_rowtypes_dependency(PLpgSQL_function *func, PLpgSQL_checkstate *cst
 												 get_namespace_name(get_rel_namespace(typrelid)),
 												 get_rel_name(typrelid),
 												 NULL);
-				}
-				else if (relkind == RELKIND_VIEW ||
-						 relkind == RELKIND_MATVIEW)
-				{
-					plpgsql_check_put_dependency(ri,
-												 "VIEW",
-												 typrelid,
-												 get_namespace_name(get_rel_namespace(typrelid)),
-												 get_rel_name(typrelid),
-												 NULL);
-				}
 
-				cstate->rel_oids = bms_add_member(cstate->rel_oids, typrelid);
+					cstate->rel_oids = bms_add_member(cstate->rel_oids, typrelid);
+				}
 			}
 		}
 	}
