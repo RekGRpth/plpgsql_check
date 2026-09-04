@@ -193,17 +193,59 @@ convert_plpgsql_datum_to_string(PLpgSQL_execstate *estate,
 		case PLPGSQL_DTYPE_ROW:
 			{
 				PLpgSQL_row *row = (PLpgSQL_row *) dtm;
-				StringInfoData ds;
-
-				*isnull = false;
 
 				*refname = row->refname;
 
-				initStringInfo(&ds);
+				if (row->notnull)
+				{
+					StringInfoData ds;
 
-				StringInfoPrintRow(&ds, estate, row);
+					*isnull = false;
 
-				return ds.data;
+					initStringInfo(&ds);
+					StringInfoPrintRow(&ds, estate, row);
+
+					return ds.data;
+				}
+				else
+					return NULL;
+			}
+
+		case PLPGSQL_DTYPE_RECFIELD:
+			{
+				if (tracer_plugin.eval_datum)
+				{
+					Datum		value;
+					Oid			typid;
+					int32		typmod;
+					StringInfoData ds;
+					PLpgSQL_variable *variable;
+					PLpgSQL_recfield *recfield = (PLpgSQL_recfield *) dtm;
+
+					variable = (PLpgSQL_variable *) estate->datums[recfield->recparentno];
+
+					Assert(variable->dtype == PLPGSQL_DTYPE_VAR ||
+						   variable->dtype == PLPGSQL_DTYPE_ROW ||
+						   variable->dtype == PLPGSQL_DTYPE_REC);
+
+					initStringInfo(&ds);
+
+					/* refnames are printed in double quotes outside */
+					appendStringInfo(&ds, "%s\".\"%s", variable->refname, recfield->fieldname);
+
+					*refname = ds.data;
+
+					/* for PostgreSQL 15+ */
+					tracer_plugin.eval_datum(estate, dtm,
+											 &typid, &typmod,
+											 &value, isnull);
+					if (*isnull)
+						return NULL;
+
+					return convert_value_to_string(estate, value, typid);
+				}
+				else
+					return NULL;
 			}
 
 		default:
@@ -296,7 +338,7 @@ print_func_args(PLpgSQL_execstate *estate, PLpgSQL_function *func, int frame_num
 		if (rec_new_varno != -1)
 			print_datum(estate, estate->datums[rec_new_varno], buffer, level);
 		if (rec_old_varno != -1)
-			print_datum(estate, estate->datums[rec_new_varno], buffer, level);
+			print_datum(estate, estate->datums[rec_old_varno], buffer, level);
 	}
 
 	if (func->fn_is_trigger == PLPGSQL_EVENT_TRIGGER)
@@ -689,8 +731,9 @@ print_all_variables(PLpgSQL_execstate *estate)
 			str[tlen] = '\0';
 		}
 
-		if (strcmp(refname, "*internal*") == 0 ||
-			strcmp(refname, "(unnamed row)") == 0)
+		if (refname && (
+			((strcmp(refname, "*internal*") == 0) ||
+			 (strcmp(refname, "(unnamed row)") == 0))))
 			refname = NULL;
 
 		if (refname)

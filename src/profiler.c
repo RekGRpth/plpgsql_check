@@ -807,6 +807,18 @@ lxcache_reset_callback(void *arg)
 	LXCache    *lxcache;
 	bool		raise_warning = true;
 
+	/*
+	 * After plpgsql_profiler_reset_all inside transaction, the
+	 * lxcache_ht will be destroyed.
+	 */
+	if (!lxcache_ht)
+	{
+		Assert(lxcache_mcxt == NULL);
+		Assert(lxcache_lxid == InvalidLocalTransactionId);
+
+		return;
+	}
+
 	hash_seq_init(&seqstatus, lxcache_ht);
 
 	LWLockAcquire(profiler_ss->func_stmts_stats_lock, LW_EXCLUSIVE);
@@ -1261,6 +1273,8 @@ merge_lxcached_shared_stmts_stats(LXCache *lxcache, bool *raise_warning)
 
 				*raise_warning = false;
 			}
+
+			return;
 		}
 
 		fss->sstats = NULL;
@@ -1533,7 +1547,7 @@ profiler_get_queryid(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt,
 
 				if (!get_plpgsql_expr_type(param_expr, &qps->paramtypes[paramno++]))
 				{
-					free(qps);
+					pfree(qps);
 					return NOQUERYID;
 				}
 			}
