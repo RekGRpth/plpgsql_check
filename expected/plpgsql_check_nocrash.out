@@ -292,7 +292,7 @@ declare
 begin
   select 1 as x into r;
   -- the reference to a record field creates a RECFIELD datum
-  assert r.x = 2;
+  assert r.x = 1;
 end;
 $$ language plpgsql;
 set plpgsql_check.enable_tracer to on;
@@ -301,11 +301,14 @@ set plpgsql_check.trace_assert to on;
 set plpgsql_check.tracer_test_mode to true;
 select failing_assert();
 NOTICE:  #0   ->> start of function failing_assert() (oid=0, tnl=1)
-NOTICE:  #0 PLpgSQL assert expression (r.x = 2) on line 7 of failing_assert() is false
-NOTICE:   "r" => '(1)', "r"."x" => '1'
-ERROR:  assertion failed
-CONTEXT:  PL/pgSQL function failing_assert() line 7 at ASSERT
-NOTICE:  #0   <<- end of function failing_assert (elapsed time=0.010 ms) aborted
+NOTICE:  PLpgSQL assert expression (r.x = 1) on line 7 of failing_assert() is true
+NOTICE:   "r"."x" => '1'
+NOTICE:  #0   <<- end of function failing_assert (elapsed time=0.010 ms)
+ failing_assert 
+----------------
+ 
+(1 row)
+
 set plpgsql_check.trace_assert to off;
 set plpgsql_check.tracer to off;
 set plpgsql_check.enable_tracer to off;
@@ -346,3 +349,142 @@ select * from plpgsql_check_function('call_polymorphic_out_first()');
 
 drop function call_polymorphic_out_first();
 drop function polymorphic_out_first(anyelement);
+create function memsafety_profiled_fx() returns int as $$
+begin
+  return 1;
+end;
+$$ language plpgsql;
+set plpgsql_check.profiler to on;
+begin;
+select memsafety_profiled_fx();
+ memsafety_profiled_fx 
+-----------------------
+                     1
+(1 row)
+
+select plpgsql_profiler_reset_all();
+ plpgsql_profiler_reset_all 
+----------------------------
+ 
+(1 row)
+
+select memsafety_profiled_fx();
+ memsafety_profiled_fx 
+-----------------------
+                     1
+(1 row)
+
+select plpgsql_profiler_reset_all();
+ plpgsql_profiler_reset_all 
+----------------------------
+ 
+(1 row)
+
+commit;
+begin;
+select memsafety_profiled_fx();
+ memsafety_profiled_fx 
+-----------------------
+                     1
+(1 row)
+
+select plpgsql_profiler_reset_all();
+ plpgsql_profiler_reset_all 
+----------------------------
+ 
+(1 row)
+
+rollback;
+set plpgsql_check.profiler to off;
+drop function memsafety_profiled_fx();
+create table memsafety_pt(a int);
+create function memsafety_pragma_tokens() returns void as $$
+declare r record;
+begin
+  -- "(", ")", ",", "[" and "]" are one character tokens
+  perform plpgsql_check_pragma('table: memsafety_pt1(a int, b numeric(10,2), c int[])');
+  perform plpgsql_check_pragma('table: memsafety_pt2(like memsafety_pt)');
+  for r in execute 'select * from memsafety_pt1' loop
+    raise notice '%', r.b;
+  end loop;
+  for r in execute 'select * from memsafety_pt2' loop
+    raise notice '%', r.a;
+  end loop;
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('memsafety_pragma_tokens()');
+ plpgsql_check_function 
+------------------------
+(0 rows)
+
+drop function memsafety_pragma_tokens();
+drop table memsafety_pt;
+create function memsafety_format_pct() returns void as $$
+begin
+  raise notice '%', format('abc%');
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('memsafety_format_pct()');
+                  plpgsql_check_function                  
+----------------------------------------------------------
+ error:22023:3:RAISE:unterminated format() type specifier
+ Query: format('abc%')
+ --            ^
+ Hint: For a single "%%" use "%%%%".
+(4 rows)
+
+drop function memsafety_format_pct();
+create function memsafety_format_pct2() returns void as $$
+begin
+  raise notice '%', format('abc%', 1);
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('memsafety_format_pct2()');
+                  plpgsql_check_function                  
+----------------------------------------------------------
+ error:22023:3:RAISE:unterminated format() type specifier
+ Query: format('abc%', 1)
+ --            ^
+ Hint: For a single "%%" use "%%%%".
+(4 rows)
+
+drop function memsafety_format_pct2();
+create function memsafety_nextval_missing_rel() returns void as $$
+begin
+  perform nextval('4294967000'::regclass);
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('memsafety_nextval_missing_rel()');
+                plpgsql_check_function                
+------------------------------------------------------
+ error:42809:3:PERFORM:"4294967000" is not a sequence
+ Query: SELECT nextval('4294967000'::regclass)
+ --                    ^
+(3 rows)
+
+drop function memsafety_nextval_missing_rel();
+create type memsafety_ct as (a int, b int);
+create function memsafety_case_composite() returns void as $$
+declare v memsafety_ct;
+begin
+  v := row(1,2)::memsafety_ct;
+  case v
+    when row(1,2)::memsafety_ct then raise notice 'one';
+    else raise notice 'other';
+  end case;
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('memsafety_case_composite()');
+ plpgsql_check_function 
+------------------------
+(0 rows)
+
+select memsafety_case_composite();
+NOTICE:  one
+ memsafety_case_composite 
+--------------------------
+ 
+(1 row)
+
+drop function memsafety_case_composite();
+drop type memsafety_ct;
