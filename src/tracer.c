@@ -193,22 +193,16 @@ convert_plpgsql_datum_to_string(PLpgSQL_execstate *estate,
 		case PLPGSQL_DTYPE_ROW:
 			{
 				PLpgSQL_row *row = (PLpgSQL_row *) dtm;
+				StringInfoData ds;
 
 				*refname = row->refname;
 
-				if (row->notnull)
-				{
-					StringInfoData ds;
+				*isnull = false;
 
-					*isnull = false;
+				initStringInfo(&ds);
+				StringInfoPrintRow(&ds, estate, row);
 
-					initStringInfo(&ds);
-					StringInfoPrintRow(&ds, estate, row);
-
-					return ds.data;
-				}
-				else
-					return NULL;
+				return ds.data;
 			}
 
 		case PLPGSQL_DTYPE_RECFIELD:
@@ -1477,7 +1471,7 @@ trace_assert(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt, tracer_info *tinfo)
 				 * We detect PLpgSQL related estate by known error callback
 				 * function. This is inspirated by PLDebugger.
 				 */
-				if (econtext->callback == (*plpgsql_check_plugin_var_ptr)->error_callback)
+				if (econtext->callback == tracer_plugin.error_callback)
 				{
 					PLpgSQL_execstate *oestate = (PLpgSQL_execstate *) econtext->arg;
 
