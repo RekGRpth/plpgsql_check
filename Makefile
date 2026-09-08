@@ -11,13 +11,19 @@ endif
 
 REGRESS_OPTS = --dbname=$(PL_TESTDB)
 
+# plpgsql_check_nocrash should be exuted with and without
+# preloaded plpgsql_check, but it is not possible enforce
+# from this makefile - installcheck doesn't support alter
+# system.
+
 REGRESS = plpgsql_check_passive\
 		plpgsql_check_active\
 		plpgsql_check_active-$(MAJORVERSION)\
 		plpgsql_check_passive-$(MAJORVERSION)\
 		plpgsql_check_profiler\
 		plpgsql_pragma_generator\
-		plpgsql_check_nocrash
+		plpgsql_check_nocrash\
+		plpgsql_check_nocrash_unstable_01
 
 ifdef NO_PGXS
 subdir = contrib/plpgsql_check

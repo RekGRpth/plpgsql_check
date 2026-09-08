@@ -76,7 +76,6 @@ typedef struct PLpgSQL_stmt_stack_item
 	char	   *label;
 	struct PLpgSQL_stmt_stack_item *outer;
 	bool		is_exception_handler;
-	Bitmapset  *invalidate_strconstvars;
 } PLpgSQL_stmt_stack_item;
 
 typedef struct PLpgSQL_statements
@@ -602,8 +601,6 @@ extern PLpgSQL_expr *plch_statement_get_expr(PLpgSQL_stmt *stmt, bool *is_dynami
 extern shmem_request_hook_type plpgsql_check_prev_shmem_request_hook;
 #endif
 extern shmem_startup_hook_type plpgsql_check_prev_shmem_startup_hook;
-
-extern PLpgSQL_plugin **plpgsql_check_plugin_var_ptr;
 
 extern void plpgsql_check_check_ext_version(Oid fn_oid);
 extern void plpgsql_check_passive_check_init(void);
