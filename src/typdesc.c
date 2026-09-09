@@ -195,7 +195,7 @@ param_get_desc(PLpgSQL_checkstate *cstate, Param *p)
 	 * paramid inside dynamic query (executed by EXECUTE command) is not
 	 * related to datum number
 	 */
-	if (cstate->is_dyn_query)
+	if (cstate->is_dynsql)
 	{
 		TupleDesc	rectupdesc;
 
@@ -298,6 +298,8 @@ pofce_get_desc(PLpgSQL_checkstate *cstate,
 		pronallargs = get_func_arg_info(func_tuple, &argtypes, &argnames, &argmodes);
 		inargno = 0;
 
+		Assert(procStruct->pronargs == list_length(fn->args));
+
 		for (i = 0; i < pronallargs; i++)
 		{
 			if (argmodes &&
@@ -311,13 +313,19 @@ pofce_get_desc(PLpgSQL_checkstate *cstate,
 
 				Assert(inargno < procStruct->pronargs);
 
+				/*
+				 * fn->args are transformated already, so items
+				 * in this list must match fields in proargtypes.
+				 * This matching is fundamental prerequsity of
+				 * this routine.
+				 */
 				arg = list_nth(fn->args, inargno);
 
 				if (IsA(arg, Param))
 				{
 					Param	   *p = (Param *) arg;
 
-					if (!cstate->is_dyn_query &&
+					if (!cstate->is_dynsql &&
 						p->paramkind == PARAM_EXTERN && p->paramid > 0 && p->location != -1)
 					{
 						int			dno = p->paramid - 1;
