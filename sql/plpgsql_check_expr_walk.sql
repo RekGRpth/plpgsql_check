@@ -501,6 +501,154 @@ $$ language plpgsql;
 
 select type, schema, name, params from plpgsql_show_dependency_tb('ew_f29');
 
+-- Explicit VARIADIC arrays supply their elements, not one array argument.
+create function ew_f30(p text)
+returns void as $$
+begin
+  raise notice '%', format('%s %s', variadic array['a', p]);
+  raise notice '%', format('%s %s', variadic '{a,b}'::text[]);
+  raise notice '%', format('%s %s', variadic '[0:1]={a,b}'::text[]);
+  raise notice '%', format('%s %s', variadic array[1, 2]);
+  raise notice '%', format('%s %s %s %s', variadic array[['a', p], ['b', p]]);
+  raise notice '%', format('plain', variadic array[]::text[]);
+  raise notice '%', format('plain', variadic null::text[]);
+  raise notice '%', format('%s%L', variadic array[null, null]::text[]);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f30', fatal_errors => false);
+
+-- Unknown array lengths do not disable format syntax validation.
+create function ew_f31(args text[])
+returns text as $$
+begin
+  return format('%s %s', variadic args);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f31');
+
+create function ew_f32()
+returns text as $$
+begin
+  return format('%s %s', variadic array['a']);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f32');
+
+create function ew_f33(args text[])
+returns text as $$
+begin
+  return format('%s %Q', variadic args);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f33');
+
+create function ew_f34()
+returns text as $$
+begin
+  return format('%s', variadic null::text[]);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f34');
+
+-- Constant synthesis uses the same expanded arguments, including NULLs.
+create function ew_f35()
+returns int as $$
+declare r record;
+begin
+  execute format('select %s%L::int as n', variadic array[null, '7']) into r;
+  return r.n;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f35');
+select ew_f35();
+
+create function ew_f36()
+returns int as $$
+declare r record;
+begin
+  execute format('select %L::int as n', variadic array[null]::text[]) into r;
+  return r.n;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f36');
+select ew_f36() is null;
+
+-- An explicit position resets subsequent implicit argument consumption.
+create function ew_f37(a text, b text)
+returns text as $$
+begin
+  return format('%s %s %1$s %s', a, b);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f37');
+select ew_f37('a', 'b');
+
+create function ew_f38()
+returns text as $$
+begin
+  return format('%s %s %*1$s', 3, 'a');
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f38');
+select ew_f38();
+
+create function ew_f39(a text, b text)
+returns text as $$
+begin
+  return format('%2$s %s', a, b);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f39');
+
+-- Synthesis must follow the same cursor for ordinary and VARIADIC calls.
+create function ew_f40()
+returns int as $$
+declare a int; b int;
+begin
+  execute format('select %s + %s + %1$s + %s', '1', '2') into a;
+  execute format('select %s + %s + %1$s + %s', variadic array['1', '2']) into b;
+  return a + b;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f40');
+select ew_f40();
+
+create function ew_f41()
+returns int as $$
+declare a int;
+begin
+  execute format('select %s + %s + %*1$s', 1, 2) into a;
+  return a;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f41');
+select ew_f41();
+
+drop function ew_f37(text, text);
+drop function ew_f38();
+drop function ew_f39(text, text);
+drop function ew_f40();
+drop function ew_f41();
+drop function ew_f30(text);
+drop function ew_f31(text[]);
+drop function ew_f32();
+drop function ew_f33(text[]);
+drop function ew_f34();
+drop function ew_f35();
+drop function ew_f36();
+
 drop function ew_f1(text);
 drop function ew_f2(text, int);
 drop function ew_f3(text);
