@@ -492,21 +492,10 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 															  false,	/* no element type */
 															  true, /* expand record */
 															  true, /* is expression */
-															  NULL);
+															  &result_oid);
 
 						if (tupdesc)
 						{
-							/*
-							 * When the CASE expression is a composite value,
-							 * the returned descriptor describes its fields,
-							 * and it can hold any number of attributes. Use
-							 * the type of the composite itself then.
-							 */
-							if (tupdesc->natts == 1)
-								result_oid = TupleDescAttr(tupdesc, 0)->atttypid;
-							else
-								result_oid = tupdesc->tdtypeid;
-
 							/*
 							 * When expected datatype is different from real,
 							 * change it. Note that what we're modifying here is
@@ -1354,6 +1343,11 @@ check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, List **except
 				dead_code_alert = false;
 			}
 
+			/* Diagnose dead statements without changing the reachable exits. */
+			if (*closing == PLPGSQL_CHECK_CLOSED ||
+				*closing == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
+				continue;
+
 			if (closing_local == PLPGSQL_CHECK_CLOSED)
 			{
 				dead_code_alert = true;
@@ -1654,51 +1648,83 @@ possibly_closed(int c)
 static int
 merge_closing(int c, int c_local, List **exceptions, List *exceptions_local, int err_code)
 {
-	*exceptions = NIL;
+	if (c_local == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS && err_code != -1)
+	{
+		List	   *normalized = NIL;
+		ListCell   *lc;
 
+		/* replace reRAISE symbol (-2) by real err_code */
+		foreach(lc, exceptions_local)
+		{
+			int			t_err_code = lfirst_int(lc);
+
+			normalized = list_append_unique_int(normalized,
+												t_err_code != -2 ? t_err_code : err_code);
+		}
+
+		exceptions_local = normalized;
+	}
+
+	/*
+	 * initial state - result state is copy of local state
+	 */
 	if (c == PLPGSQL_CHECK_UNKNOWN)
 	{
 		if (c_local == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
 			*exceptions = exceptions_local;
+		else
+			*exceptions = NIL;
 
 		return c_local;
 	}
 
+	/*
+	 * Do nothing when new state is UNKNOWN
+	 */
 	if (c_local == PLPGSQL_CHECK_UNKNOWN)
 		return c;
 
+	/*
+	 * When both first and second path has same closing state, the
+	 * result is same. Concat exceptions when closing state is an
+	 * exception.
+	 */
 	if (c == c_local)
 	{
 		if (c == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
 		{
-
-			if (err_code != -1)
-			{
-				ListCell   *lc;
-
-				/* replace reRAISE symbol (-2) by real err_code */
-				foreach(lc, exceptions_local)
-				{
-					int			t_err_code = lfirst_int(lc);
-
-					*exceptions = list_append_unique_int(*exceptions,
-														 t_err_code != -2 ? t_err_code : err_code);
-				}
-			}
-			else
-				*exceptions = list_concat_unique_int(*exceptions, exceptions_local);
+			*exceptions = list_concat_unique_int(*exceptions, exceptions_local);
 		}
 
 		return c_local;
 	}
 
+	/*
+	 * When one path ending by RETURN and second by an exception,
+	 * then we know, so the result is closed paths. It is more
+	 * practical to return PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS,
+	 * because we don't lost a list of exceptions.
+	 */
 	if (c == PLPGSQL_CHECK_CLOSED || c_local == PLPGSQL_CHECK_CLOSED)
 	{
-		if (c == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS ||
-			c_local == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
-			return PLPGSQL_CHECK_CLOSED;
+		if (c_local == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
+		{
+			*exceptions = exceptions_local;
+			return PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS;
+		}
+		else if (c == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
+		{
+			return PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS;
+		}
 	}
 
+	*exceptions = NIL;
+
+	/*
+	 * common combination is CLOSED and UNCLOSED, maybe
+	 * there is a possibility to be more accurate, but
+	 * the result can be some between.
+	 */
 	return PLPGSQL_CHECK_POSSIBLY_CLOSED;
 }
 

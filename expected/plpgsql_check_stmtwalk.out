@@ -651,3 +651,105 @@ select * from plpgsql_check_function('sw_move(int)');
 (0 rows)
 
 drop function sw_move(int);
+-- Check before execution initializes the hidden CASE variable's type
+create type sw_single_field as (a int);
+create function sw_case_single(v sw_single_field) returns int as $$
+begin
+  case v
+    when row(1)::sw_single_field then return 1;
+    else return 2;
+  end case;
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('sw_case_single(sw_single_field)');
+ plpgsql_check_function 
+------------------------
+(0 rows)
+
+select sw_case_single(row(1)::sw_single_field) = 1
+   and sw_case_single(row(2)::sw_single_field) = 2 as valid;
+ valid 
+-------
+ t
+(1 row)
+
+drop function sw_case_single(sw_single_field);
+drop type sw_single_field;
+-- Earlier exception paths must remain visible when later paths are merged
+create function sw_exception_union(p boolean) returns int as $$
+begin
+  begin
+    if p then
+      raise division_by_zero;
+    else
+      raise unique_violation;
+    end if;
+  exception
+    when division_by_zero then null;
+    when unique_violation then return 2;
+  end;
+  return 1;
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('sw_exception_union(boolean)');
+ plpgsql_check_function 
+------------------------
+(0 rows)
+
+drop function sw_exception_union(boolean);
+-- A first-handler rethrow keeps the caught SQLSTATE for outer handlers
+create function sw_nested_rethrow() returns int as $$
+begin
+  begin
+    begin
+      raise division_by_zero;
+    exception when division_by_zero then
+      raise;
+    end;
+  exception when division_by_zero then
+    null;
+  end;
+  return 1;
+end;
+$$ language plpgsql;
+select * from plpgsql_check_function('sw_nested_rethrow()');
+ plpgsql_check_function 
+------------------------
+(0 rows)
+
+drop function sw_nested_rethrow();
+-- Dead exits must not change which exception handler is reachable
+create function sw_dead_flow() returns int as $$
+begin
+  begin
+    raise division_by_zero;
+    raise unique_violation;
+  exception
+    when division_by_zero then return 1;
+    when unique_violation then null;
+  end;
+end;
+$$ language plpgsql;
+select sqlstate, message from plpgsql_check_function_tb('sw_dead_flow()');
+ sqlstate |     message      
+----------+------------------
+ 00000    | unreachable code
+(1 row)
+
+-- Expressions in dead statements still need to be checked
+create function sw_dead_expression() returns int as $$
+begin
+  return 1;
+  perform sw_missing_dead_column;
+end;
+$$ language plpgsql;
+select exists (
+  select from plpgsql_check_function_tb('sw_dead_expression()')
+  where sqlstate = '42703') as checked;
+ checked 
+---------
+ t
+(1 row)
+
+drop function sw_dead_flow();
+drop function sw_dead_expression();
