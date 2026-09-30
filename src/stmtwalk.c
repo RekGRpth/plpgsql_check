@@ -1099,6 +1099,17 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 										  false,
 										  NULL,
 										  stmt_open->params);
+
+						if (!cstate->dyn_stmt_open)
+						{
+							MemoryContext oldcxt = MemoryContextSwitchTo(cstate->check_cxt);
+
+							cstate->dyn_stmt_open = palloc0(cstate->estate->ndatums * sizeof(PLpgSQL_stmt_open *));
+
+							MemoryContextSwitchTo(oldcxt);
+						}
+
+						cstate->dyn_stmt_open[stmt_open->curvar] = stmt_open;
 					}
 
 					plpgsql_check_target(cstate, stmt_open->curvar, NULL, NULL);
@@ -1149,10 +1160,29 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 					check_variable(cstate, stmt_fetch->target);
 
-					if (!stmt_fetch->is_move &&
-						var != NULL && var->cursor_explicit_expr != NULL)
-						plpgsql_check_assignment_to_variable(cstate, var->cursor_explicit_expr,
-															 stmt_fetch->target, -1);
+					if (!stmt_fetch->is_move && var)
+					{
+						if (var->cursor_explicit_expr != NULL)
+						{
+							plpgsql_check_assignment_to_variable(cstate, var->cursor_explicit_expr,
+																 stmt_fetch->target, -1);
+						}
+						else
+						{
+							/* maybe, the cursor is dynamic */
+							PLpgSQL_stmt_open *stmt_open = cstate->dyn_stmt_open[var->dno];
+
+							if (stmt_open)
+							{
+								check_dynamic_sql(cstate,
+												  stmt,
+												  stmt_open->dynquery,
+												  true,
+												  stmt_fetch->target,
+												  stmt_open->params);
+							}
+						}
+					}
 
 					plpgsql_check_expr(cstate, stmt_fetch->expr);
 
@@ -1374,19 +1404,14 @@ check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, List **except
 				}
 			}
 		}
-
-		invalidate_strconstvars(cstate);
-		cstate->top_stmts = current_stmts.outer;
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		cstate->pragma_vector = prev_pragma_vector;
 		cstate->was_pragma = false;
 
 		invalidate_strconstvars(cstate);
 		cstate->top_stmts = current_stmts.outer;
-
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
 }

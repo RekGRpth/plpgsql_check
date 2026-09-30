@@ -642,3 +642,93 @@ select exists (
 
 drop function sw_dead_flow();
 drop function sw_dead_expression();
+
+
+-- Pragmas in one branch or handler must not affect its siblings
+create function sw_pragma_siblings(p boolean) returns void as $$
+begin
+  if p then
+    perform plpgsql_check_pragma('disable:check');
+  else
+    perform sw_missing_else_column;
+  end if;
+  case when p then
+    perform plpgsql_check_pragma('disable:check');
+  else
+    perform sw_missing_case_column;
+  end case;
+  begin
+    raise division_by_zero;
+  exception
+    when unique_violation then
+      perform plpgsql_check_pragma('disable:check');
+    when division_by_zero then
+      perform sw_missing_handler_column;
+  end;
+end;
+$$ language plpgsql;
+
+select count(*) = 3 as sibling_checks
+from plpgsql_check_function_tb('sw_pragma_siblings(boolean)', fatal_errors => false)
+where sqlstate = '42703';
+
+drop function sw_pragma_siblings(boolean);
+
+-- Check dynamic cursors before execution can prime record-field metadata
+create function sw_dynamic_cursor() returns int as $$
+declare c refcursor; r record;
+begin
+  open c for execute 'select 1 as a';
+  fetch c into r;
+  close c;
+  return r.a;
+end;
+$$ language plpgsql;
+
+create function sw_parameter_cursor(v int) returns int as $$
+declare c refcursor; r record;
+begin
+  open c for execute 'select $1::int as a' using v;
+  fetch c into r;
+  close c;
+  return r.a;
+end;
+$$ language plpgsql;
+
+-- A later static OPEN supersedes the earlier dynamic query
+create function sw_cursor_reopen(v int) returns int as $$
+declare c refcursor; r record;
+begin
+  open c for execute 'select $1::int as a' using v;
+  fetch c into r;
+  close c;
+  open c for select v as b;
+  fetch c into r;
+  close c;
+  return r.b;
+end;
+$$ language plpgsql;
+
+-- FETCH into scalar targets also invalidates their previous traced constants
+create function sw_dynamic_scalar() returns void as $$
+declare c refcursor; s text := 'select sw_missing_dynamic_column';
+begin
+  open c for execute $q$select 'select 1'::text$q$;
+  fetch c into s;
+  close c;
+  execute s;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_dynamic_cursor()');
+select * from plpgsql_check_function('sw_parameter_cursor(int)');
+select * from plpgsql_check_function('sw_cursor_reopen(int)');
+select * from plpgsql_check_function('sw_dynamic_scalar()');
+select sw_dynamic_cursor() = 1 and sw_parameter_cursor(3) = 3
+   and sw_cursor_reopen(4) = 4 as valid;
+do $$ begin perform sw_dynamic_scalar(); end; $$;
+
+drop function sw_dynamic_cursor();
+drop function sw_parameter_cursor(int);
+drop function sw_cursor_reopen(int);
+drop function sw_dynamic_scalar();
