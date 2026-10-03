@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "catalog/namespace.h"
+#include "parser/parser.h"
 #include "parser/scansup.h"
 #include "parser/parse_type.h"
 #include "utils/builtins.h"
@@ -646,6 +647,72 @@ parse_qualified_identifier(TokenizerState *state, const char **startptr, size_t 
 	*size = _size;
 }
 
+static Oid
+get_scalar_type(TokenizerState *state, int32 *typmod)
+{
+	PragmaTokenType token,
+			   *_token;
+	const char *typename_start;
+	const char *typename_end;
+	const char *typestr;
+	TypeName   *typeName;
+	Oid			typtype;
+	int			paren_depth = 0;
+	int			bracket_depth = 0;
+
+	_token = get_token(state, &token);
+	if (!_token ||
+		(_token->value != PRAGMA_TOKEN_IDENTIF &&
+		 _token->value != PRAGMA_TOKEN_QIDENTIF))
+		elog(ERROR, "Syntax error (expected identifier)");
+
+	typename_start = _token->substr;
+	typename_end = typename_start;
+
+	/*
+	 * Leave the enclosing field list or option separator unread. PostgreSQL
+	 * validates the complete type spelling, including modifiers and arrays.
+	 */
+	do
+	{
+		if (paren_depth == 0 && bracket_depth == 0 &&
+			(_token->value == ',' || _token->value == ')'))
+		{
+			unget_token(state, _token);
+			break;
+		}
+
+		if (_token->value == '(')
+			paren_depth++;
+		else if (_token->value == ')' && paren_depth > 0)
+			paren_depth--;
+		else if (_token->value == '[')
+			bracket_depth++;
+		else if (_token->value == ']' && bracket_depth > 0)
+			bracket_depth--;
+
+		typename_end = _token->substr + _token->size;
+		_token = get_token(state, &token);
+	}
+	while (_token);
+
+	typestr = pnstrdup(typename_start, typename_end - typename_start);
+
+#if PG_VERSION_NUM >= 160000
+
+	typeName = typeStringToTypeName(typestr, NULL);
+
+#else
+
+	typeName = typeStringToTypeName(typestr);
+
+#endif
+
+	typenameTypeIdAndMod(NULL, typeName, &typtype, typmod);
+
+	return typtype;
+}
+
 /*
  * When rectype is not allowed, then composite type is allowed only
  * on top level.
@@ -655,10 +722,6 @@ get_type_internal(TokenizerState *state, int32 *typmod, bool allow_rectype, bool
 {
 	PragmaTokenType token,
 			   *_token;
-	const char *typename_start = NULL;
-	size_t		typename_length = 0;
-	const char *typestr;
-	TypeName   *typeName = NULL;
 	Oid			typtype;
 
 	check_stack_depth();
@@ -734,121 +797,9 @@ get_type_internal(TokenizerState *state, int32 *typmod, bool allow_rectype, bool
 
 		return resultTupleDesc->tdtypeid;
 	}
-	else if (_token->value == PRAGMA_TOKEN_QIDENTIF)
-	{
-		unget_token(state, _token);
 
-		parse_qualified_identifier(state, &typename_start, &typename_length);
-	}
-	else if (_token->value == PRAGMA_TOKEN_IDENTIF)
-	{
-		PragmaTokenType token2,
-				   *_token2;
-
-		_token2 = get_token(state, &token2);
-
-		if (_token2)
-		{
-			if (_token2->value == '.')
-			{
-				typename_start = _token->substr;
-				typename_length = _token->size;
-
-				parse_qualified_identifier(state, &typename_start, &typename_length);
-			}
-			else
-			{
-				/* multi word type name */
-				typename_start = _token->substr;
-				typename_length = _token->size;
-
-				while (_token2 && _token2->value == PRAGMA_TOKEN_IDENTIF)
-				{
-					typename_length = _token2->substr + _token2->size - typename_start;
-
-					_token2 = get_token(state, &token2);
-				}
-
-				unget_token(state, _token2);
-			}
-		}
-		else
-		{
-			typename_start = _token->substr;
-			typename_length = _token->size;
-		}
-	}
-	else
-		elog(ERROR, "Syntax error (expected identifier)");
-
-	/* get typmod */
-	_token = get_token(state, &token);
-	if (_token)
-	{
-		if (_token->value == '(')
-		{
-			while (1)
-			{
-				_token = get_token(state, &token);
-				if (!_token || _token->value != PRAGMA_TOKEN_NUMBER)
-					elog(ERROR, "Syntax error (expected number for typmod specification)");
-
-				_token = get_token(state, &token);
-				if (!_token)
-					elog(ERROR, "Syntax error (unclosed typmod specification)");
-
-				if (_token->value == ')')
-				{
-					break;
-				}
-				else if (_token->value != ',')
-					elog(ERROR, "Syntax error (expected \",\" in typmod list)");
-			}
-
-			typename_length = _token->substr + _token->size - typename_start;
-		}
-		else
-			unget_token(state, _token);
-	}
-
-	/* get array symbols */
-	_token = get_token(state, &token);
-	if (_token)
-	{
-		if (_token->value == '[')
-		{
-			_token = get_token(state, &token);
-			if (_token && _token->value == PRAGMA_TOKEN_NUMBER)
-				_token = get_token(state, &token);
-
-			if (!_token)
-				elog(ERROR, "Syntax error (unclosed array specification)");
-
-			if (_token->value != ']')
-				elog(ERROR, "Syntax error (expected \"]\")");
-
-			typename_length = _token->substr + _token->size - typename_start;
-		}
-		else
-			unget_token(state, _token);
-	}
-
-	typestr = pnstrdup(typename_start, typename_length);
-
-
-#if PG_VERSION_NUM >= 160000
-
-	typeName = typeStringToTypeName(typestr, NULL);
-
-#else
-
-	typeName = typeStringToTypeName(typestr);
-
-#endif
-
-	typenameTypeIdAndMod(NULL, typeName, &typtype, typmod);
-
-	return typtype;
+	unget_token(state, _token);
+	return get_scalar_type(state, typmod);
 }
 
 static Oid
@@ -937,7 +888,7 @@ pragma_assert_name(PragmaAssertType pat)
 static Oid
 check_var_schema(PLpgSQL_checkstate *cstate, int dno)
 {
-	return get_namespace_oid(cstate->strconstvars[dno], true);
+	return get_namespace_oid(cstate->strconstvars[dno], false);
 }
 
 static Oid
@@ -1494,20 +1445,10 @@ get_type_comment_option(TokenizerState *tstate, const char *name, plpgsql_check_
 	if (_token->value == PRAGMA_TOKEN_IDENTIF ||
 		_token->value == PRAGMA_TOKEN_QIDENTIF)
 	{
-		const char *typname_start = NULL;
-		size_t		typname_length;
-		char	   *typestr;
-		Oid			typid;
 		int32		typmod;
 
 		unget_token(tstate, _token);
-
-		parse_qualified_identifier(tstate, &typname_start, &typname_length);
-
-		typestr = pnstrdup(typname_start, typname_length);
-		parseTypeString(typestr, &typid, &typmod, false);
-
-		return typid;
+		return get_scalar_type(tstate, &typmod);
 	}
 	else
 		elog(ERROR, "syntax error in comment option \"%s\" (fnoid: %u) (expected type identifier)",
@@ -1817,47 +1758,49 @@ static char *
 search_comment_options_linecomment(char *src, plpgsql_check_info *cinfo)
 {
 	char	   *start = src;
+	char	   *tag;
 
-	while (*src)
-	{
-		if (*src == '\n')
-		{
-			char	   *tag;
-
-			tag = memmem(start, src - start,
-						 tagstr, strlen(tagstr));
-			if (tag)
-				comment_options_parsecontent(tag, src - tag, cinfo);
-
-			return src + 1;
-		}
-
+	while (*src && *src != '\n')
 		src += 1;
-	}
 
-	return src;
+	tag = memmem(start, src - start,
+				 tagstr, strlen(tagstr));
+	if (tag)
+		comment_options_parsecontent(tag, src - tag, cinfo);
+
+	return *src ? src + 1 : src;
 }
 
 static char *
 search_comment_options_multilinecomment(char *src, plpgsql_check_info *cinfo)
 {
 	char	   *start = src;
+	int			depth = 1;
 
 	while (*src)
 	{
-		if (*src == '*' && src[1] == '/')
+		if (*src == '/' && src[1] == '*')
+		{
+			depth++;
+			src += 2;
+		}
+		else if (*src == '*' && src[1] == '/')
 		{
 			char	   *tag;
 
+			/* An inner terminator must not become part of its option line. */
 			tag = memmem(start, src - start,
 						 tagstr, strlen(tagstr));
 			if (tag)
 				comment_options_parsecontent(tag, src - tag, cinfo);
 
-			return src + 1;
+			src += 2;
+			if (--depth == 0)
+				return src;
+			start = src;
 		}
-
-		src += 1;
+		else
+			src += 1;
 	}
 
 	return src;
@@ -1871,6 +1814,7 @@ void
 plpgsql_check_search_comment_options(plpgsql_check_info *cinfo)
 {
 	char	   *src = plpgsql_check_get_src(cinfo->proctuple);
+	char	   *srcstart = src;
 
 	cinfo->all_warnings = false;
 	cinfo->without_warnings = false;
@@ -1885,11 +1829,28 @@ plpgsql_check_search_comment_options(plpgsql_check_info *cinfo)
 
 		else if (*src == '\'')
 		{
+
+#if PG_VERSION_NUM < 190000
+
+			bool		backslash_escapes = !standard_conforming_strings ||
+				(src > srcstart && (src[-1] == 'e' || src[-1] == 'E') &&
+				 (src == srcstart + 1 || !is_ident_cont((unsigned char) src[-2])));
+
+#else
+
+			bool		backslash_escapes =
+				(src > srcstart && (src[-1] == 'e' || src[-1] == 'E') &&
+				 (src == srcstart + 1 || !is_ident_cont((unsigned char) src[-2])));
+
+#endif
+
 			src++;
 
 			while (*src)
 			{
-				if (*src++ == '\'')
+				if (*src == '\\' && backslash_escapes && src[1])
+					src += 2;
+				else if (*src++ == '\'')
 				{
 					if (*src == '\'')
 						src += 1;
@@ -1915,28 +1876,21 @@ plpgsql_check_search_comment_options(plpgsql_check_info *cinfo)
 			}
 		}
 
-		else if (*src == '$')
+		else if (*src == '$' &&
+				 (src == srcstart || !is_ident_cont((unsigned char) src[-1])))
 		{
 			char	   *start = src++;
-			bool		is_custom_string = false;
 
-			while (*src)
+			if (is_ident_start((unsigned char) *src))
 			{
-				if (isblank(*src))
+				do
 				{
-					is_custom_string = false;
-					break;
+					src += 1;
 				}
-				else if (*src == '$')
-				{
-					is_custom_string = true;
-					break;
-				}
-
-				src += 1;
+				while (*src != '$' && is_ident_cont((unsigned char) *src));
 			}
 
-			if (is_custom_string)
+			if (*src == '$')
 			{
 				size_t		cust_str_length = 0;
 

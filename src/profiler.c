@@ -1554,6 +1554,23 @@ profiler_stmt_end(PLpgSQL_execstate *estate,
 												   &sinstr->has_queryid,
 												   &sinstr->qparams);
 
+		/* Only these statements set a fresh processed-row count. */
+		switch (stmt->cmd_type)
+		{
+			case PLPGSQL_STMT_EXECSQL:
+			case PLPGSQL_STMT_DYNEXECUTE:
+			case PLPGSQL_STMT_PERFORM:
+			case PLPGSQL_STMT_RETURN_QUERY:
+			case PLPGSQL_STMT_FETCH:
+				sinstr->rows += estate->eval_processed;
+				break;
+			case PLPGSQL_STMT_RETURN_NEXT:
+				sinstr->rows++;
+				break;
+			default:
+				break;
+		}
+
 		_profiler_stmt_end(sinstr, false);
 	}
 }
@@ -1794,6 +1811,16 @@ profiler_get_dyn_queryid(PLpgSQL_execstate *estate, PLpgSQL_expr *expr, QParams 
  *
  ***************************************
  */
+static double
+fstats_stddev(FuncStats *fs)
+{
+	/* Use the Welford population variance */
+	if (fs->exec_count == 0)
+		return get_float8_nan();
+
+	return sqrt(fs->total_time_m2 / fs->exec_count);
+}
+
 static void
 local_iterate_over_all_profiles(plpgsql_check_result_info *ri)
 {
@@ -1819,7 +1846,7 @@ local_iterate_over_all_profiles(plpgsql_check_result_info *ri)
 													fs->exec_count_err,
 													(double) fs->total_time,
 													ceil(fs->total_time_mean),
-													ceil(sqrt(fs->total_time_m2 / fs->exec_count - 1)),
+													ceil(fstats_stddev(fs)),
 													(double) fs->min_time,
 													(double) fs->max_time);
 	}
@@ -1861,7 +1888,7 @@ shared_iterate_over_all_profiles(plpgsql_check_result_info *ri)
 															fs->exec_count_err,
 															(double) fs->total_time,
 															ceil(fs->total_time_mean),
-															ceil(sqrt(fs->total_time_m2 / fs->exec_count - 1)),
+															ceil(fstats_stddev(fs)),
 															(double) fs->min_time,
 															(double) fs->max_time);
 
@@ -2198,7 +2225,7 @@ profiler_report_walker(PLpgSQL_stmt *stmt, profiler_report_context *context)
 
 			context->total_time_abs = accum_float8(context, total_time_abs, sstats->us_total / 1000.0);
 
-			total_exec_count = sstats->exec_count + sstats->exec_count_err;
+			total_exec_count = sstats->exec_count;
 			if (total_exec_count > 0)
 				avg_time_us = ceil(((float8) sstats->us_total) / total_exec_count);
 			else

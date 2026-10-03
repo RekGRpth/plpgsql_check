@@ -171,6 +171,9 @@ begin
   perform plpgsql_check_pragma('type: r (a double precision, b varchar(10), c numeric(10,2))');
   -- an array, with and without a dimension
   perform plpgsql_check_pragma('type: r (a int[], b int[3], c pg_catalog.varchar[])');
+  -- datetime modifiers can precede more words, and arrays can have many dimensions
+  perform plpgsql_check_pragma('type: r (a timestamp(3) without time zone, b time(2) with time zone, c interval day to second(2))');
+  perform plpgsql_check_pragma('type: r (a integer[][], b integer[2][3], c (d numeric(8,2), e timestamp(1) with time zone))');
   -- a composite type copied from a table
   perform plpgsql_check_pragma('type: r (like pr_tab)');
   raise notice '%', r.a;
@@ -178,6 +181,22 @@ end;
 $$ language plpgsql;
 
 select * from plpgsql_check_function('pr_type');
+
+create function pr_negative_scale()
+returns void as $$
+declare r record;
+begin
+  perform plpgsql_check_pragma('type: r (a numeric(5,-2), b int)');
+  raise notice '%', r.a;
+end;
+$$ language plpgsql;
+
+select case when current_setting('server_version_num')::int >= 150000 then
+  not exists (select from plpgsql_check_function_tb('pr_negative_scale')
+              where level = 'error')
+  else true end as negative_scale;
+
+drop function pr_negative_scale();
 
 -- errors of the type parser
 create or replace function pr_type()
@@ -233,6 +252,12 @@ begin
   -- a composite type is not allowed as a type of a column of a table
   -- created by this pragma
   perform plpgsql_check_pragma('table: pr_tt8(a (b int))');
+  -- constraints and collations are still outside the table pragma grammar
+  perform plpgsql_check_pragma('table: pr_tt9(a int primary key)');
+  perform plpgsql_check_pragma('table: pr_tt9(a int not null)');
+  perform plpgsql_check_pragma('table: pr_tt9(a int default 1)');
+  perform plpgsql_check_pragma('table: pr_tt9(a int check (a > 0))');
+  perform plpgsql_check_pragma('table: pr_tt9(a text collate "C")');
 end;
 $$ language plpgsql;
 
@@ -297,6 +322,23 @@ $$ language plpgsql;
 select * from plpgsql_check_function('pr_assert');
 
 -- the asserted objects do not exist
+create or replace function pr_assert()
+returns void as $$
+declare
+  v_schema varchar default 'pr_missing_schema';
+  v_table varchar default 'pr_tab';
+  v_column varchar default 'a';
+begin
+  perform 'pragma:assert-schema: v_schema';
+  perform 'pragma:assert-table: v_schema, v_table';
+  perform 'pragma:assert-column: v_schema, v_table, v_column';
+end;
+$$ language plpgsql;
+
+select count(*) = 3 as missing_schemas
+  from plpgsql_check_function_tb('pr_assert', fatal_errors => false)
+  where sqlstate = '3F000';
+
 create or replace function pr_assert()
 returns void as $$
 declare

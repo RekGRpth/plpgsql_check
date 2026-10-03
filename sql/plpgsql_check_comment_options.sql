@@ -137,6 +137,46 @@ $$ language plpgsql;
 
 select * from co_check('co_blockcomment');
 
+-- tags before and after nested comments belong to the same outer comment
+create function co_nested_comment()
+returns void as $$
+/*
+ * @plpgsql_check_options: extra_warnings = off
+ /* inner description
+    /* deeper description */
+ */
+ * @plpgsql_check_options: other_warnings = off
+ */
+declare x int; y int;
+begin
+  x := 1;
+end;
+$$ language plpgsql;
+
+select * from co_check('co_nested_comment');
+select count(*) = 2 as warnings_without_options
+  from plpgsql_check_function_tb('co_nested_comment', use_incomment_options => false);
+
+drop function co_nested_comment();
+
+-- an inner terminator is not part of the tagged option on its line
+create function co_nested_inline_option()
+returns void as $$
+/*
+  /* @plpgsql_check_options: without_warnings */
+*/
+declare x int;
+begin
+  null;
+end;
+$$ language plpgsql;
+
+select * from co_check('co_nested_inline_option');
+select count(*) = 1 as warning_without_options
+  from plpgsql_check_function_tb('co_nested_inline_option', use_incomment_options => false);
+
+drop function co_nested_inline_option();
+
 -- The source code is scanned for the tag outside of the string
 -- literals, the quoted identifiers and the dollar quoted strings, so the
 -- tags written there are not options - if they were parsed, the check
@@ -161,6 +201,115 @@ select * from co_check('co_skipping');
 
 select * from plpgsql_check_function('co_skipping',
                                      use_incomment_options := false);
+
+-- escape strings honor backslashes, but literal contents are never options
+set standard_conforming_strings = on;
+
+create function co_escape_string()
+returns text as $func$
+declare
+  s1 text := E'can\'t
+-- @plpgsql_check_options: nonsense
+';
+  s2 text := e'won\'t';
+  x int;
+begin
+  -- @plpgsql_check_options: without_warnings
+  return s1 || s2;
+end;
+$func$ language plpgsql;
+
+select * from co_check('co_escape_string');
+select count(*) = 1 as unused_without_options
+  from plpgsql_check_function_tb('co_escape_string', use_incomment_options => false)
+  where message = 'unused variable "x"';
+
+-- the last letter of a type name is not an escape-string prefix
+create function co_standard_string()
+returns text as $func$
+declare
+  s name := name'backslash\';
+  x int;
+begin
+  -- @plpgsql_check_options: without_warnings
+  return s::text;
+end;
+$func$ language plpgsql;
+
+select * from co_check('co_standard_string');
+
+drop function co_escape_string();
+drop function co_standard_string();
+drop function co_legacy_string();
+
+-- positional parameters and identifiers do not open dollar-quoted strings
+create function co_dollar_parameters(int, int)
+returns int as $func$
+declare x int;
+begin
+  return $1+$2;
+  -- @plpgsql_check_options: without_warnings
+end;
+$func$ language plpgsql;
+
+select * from co_check('co_dollar_parameters');
+
+create function co_dollar_identifier()
+returns int as $func$
+declare
+  v$x$part int := 1;
+  x int;
+begin
+  -- @plpgsql_check_options: without_warnings
+  return v$x$part;
+end;
+$func$ language plpgsql;
+
+select * from co_check('co_dollar_identifier');
+
+-- genuine tags can contain digits, are case sensitive, and hide literal options
+create function co_dollar_literal()
+returns text as $func$
+declare
+  s text := $Tag_1$other delimiters $$ and $tag_1$
+-- @plpgsql_check_options: nonsense
+$Tag_1$;
+  x int;
+begin
+  -- @plpgsql_check_options: without_warnings
+  return s;
+end;
+$func$ language plpgsql;
+
+select * from co_check('co_dollar_literal');
+
+drop function co_dollar_parameters(int, int);
+drop function co_dollar_identifier();
+drop function co_dollar_literal();
+
+-- end of source terminates a line comment just like a newline
+create function co_final_comment()
+returns void as $func$declare x int; begin null; end; -- @plpgsql_check_options: without_warnings$func$ language plpgsql;
+
+select * from co_check('co_final_comment');
+select count(*) = 1 as unused_without_options
+  from plpgsql_check_function_tb('co_final_comment', use_incomment_options => false)
+  where message = 'unused variable "x"';
+
+create function co_final_newline()
+returns void as $func$declare x int; begin null; end; -- @plpgsql_check_options: without_warnings
+$func$ language plpgsql;
+
+select * from co_check('co_final_newline');
+
+create function co_final_empty()
+returns void as $func$begin null; end; --$func$ language plpgsql;
+
+select * from co_check('co_final_empty');
+
+drop function co_final_comment();
+drop function co_final_newline();
+drop function co_final_empty();
 
 --
 -- name options
@@ -297,6 +446,47 @@ $$ language plpgsql;
 
 select * from co_check('co_anycompatiblerange');
 
+-- complete type syntax, including separators inside modifiers and between options
+create function co_type_array(anyelement)
+returns text as $$
+-- @plpgsql_check_options: anyelementtype = "pg_catalog"."int4"[][], extra_warnings = off
+begin
+  return $1::text;
+end;
+$$ language plpgsql;
+
+select * from co_check('co_type_array');
+
+create function co_type_datetime(anyelement)
+returns text as $$
+-- @plpgsql_check_options: anyelementtype = timestamp(3) without time zone
+begin
+  return $1::text;
+end;
+$$ language plpgsql;
+
+select * from co_check('co_type_datetime');
+
+create function co_type_multiword(anycompatible)
+returns text as $$
+-- @plpgsql_check_options: anycompatibletype = double precision, extra_warnings = off
+begin
+  return $1::text;
+end;
+$$ language plpgsql;
+
+select * from co_check('co_type_multiword');
+
+create function co_type_numeric(anyelement)
+returns text as $$
+-- @plpgsql_check_options: anyelementtype = numeric(8,2), extra_warnings = off
+begin
+  return $1::text;
+end;
+$$ language plpgsql;
+
+select * from co_check('co_type_numeric');
+
 --
 -- echo option
 --
@@ -394,6 +584,16 @@ $$ language plpgsql;
 
 select * from co_check('co_err_badtype');
 
+create function co_err_type_suffix(anyelement)
+returns text as $$
+-- @plpgsql_check_options: anyelementtype = integer[] trailing
+begin
+  return $1::text;
+end;
+$$ language plpgsql;
+
+select * from co_check('co_err_type_suffix');
+
 create function co_err_notype(anyelement)
 returns void as $$
 -- @plpgsql_check_options: anyelementtype
@@ -469,6 +669,7 @@ drop function co_err_noname();
 drop function co_err_badname();
 drop function co_err_notype(anyelement);
 drop function co_err_badtype(anyelement);
+drop function co_err_type_suffix(anyelement);
 drop function co_err_notrange2(anycompatiblerange);
 drop function co_err_notrange(anyrange);
 drop function co_err_nobool();
@@ -478,6 +679,10 @@ drop function co_err_nooption();
 drop function co_err_unknown();
 drop function co_echo(int);
 drop function co_anycompatiblerange(anycompatiblerange);
+drop function co_type_array(anyelement);
+drop function co_type_datetime(anyelement);
+drop function co_type_multiword(anycompatible);
+drop function co_type_numeric(anyelement);
 drop function co_anycompatible(anycompatible);
 drop function co_anyrange(anyrange);
 drop function co_anyenum(anyenum);
@@ -500,3 +705,4 @@ drop function co_bool3();
 drop function co_bool2();
 drop function co_bool1();
 drop function co_check(text, regclass);
+

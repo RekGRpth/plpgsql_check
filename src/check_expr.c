@@ -1240,7 +1240,10 @@ plpgsql_check_returned_expr_with_parser_setup(PLpgSQL_checkstate *cstate,
 		 */
 		cstate->used_variables = bms_add_members(cstate->used_variables, expr->paramnos);
 
-		tupdesc = plpgsql_check_expr_get_desc(cstate, expr, false, true, is_expression, &first_level_typ);
+		tupdesc = plpgsql_check_expr_get_desc(cstate, expr,
+											  false, is_expression,
+											  is_expression, &first_level_typ);
+
 		is_immutable_null = is_const_null_expr(cstate, expr);
 
 		/* try to identify obsolete return refcursor's value */
@@ -1513,8 +1516,15 @@ plpgsql_check_expr_as_rvalue_with_parser_setup(PLpgSQL_checkstate *cstate,
 
 						typeid = use_element_type ? get_array_type(expected_typoid) : expected_typoid;
 
-						getTypeInputInfo(typeid, &infunc, &intypeioparam);
-						(void) OidInputFunctionCall(infunc, str, intypeioparam, -1);
+						/*
+						 * Assignment casts, including element casts in an
+						 * array, need not agree with textual input.
+						 */
+						if (!can_coerce_type(1, &expr_typoid, &typeid, COERCION_ASSIGNMENT))
+						{
+							getTypeInputInfo(typeid, &infunc, &intypeioparam);
+							(void) OidInputFunctionCall(infunc, str, intypeioparam, -1);
+						}
 					}
 				}
 			}

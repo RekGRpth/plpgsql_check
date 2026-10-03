@@ -905,12 +905,13 @@ format_error_xml(StringInfo str,
 					 unpack_sql_state(sqlerrcode));
 	appendStringInfo(str, "    <Message>%s</Message>\n",
 					 escape_xml(message));
-	if (estate != NULL && estate->err_stmt != NULL)
+	if (estate != NULL && estate->err_stmt != NULL && estate->err_stmt->lineno > 0)
 		appendStringInfo(str, "    <Stmt lineno=\"%d\">%s</Stmt>\n",
 						 estate->err_stmt->lineno,
 						 plpgsql_check__stmt_typename_p(estate->err_stmt));
 
-	else if (strcmp(message, "unused declared variable") == 0)
+	else if (strncmp(message, UNUSED_VARIABLE_TEXT, UNUSED_VARIABLE_TEXT_CHECK_LENGTH) == 0 ||
+			 strncmp(message, NEVER_READ_VARIABLE_TEXT, NEVER_READ_VARIABLE_TEXT_CHECK_LENGTH) == 0)
 		appendStringInfo(str, "    <Stmt lineno=\"%d\">DECLARE</Stmt>\n",
 						 lineno);
 
@@ -961,12 +962,13 @@ format_error_json(StringInfo str,
 
 	escape_json(&sinfo, message);
 	appendStringInfo(str, "    \"message\":%s,\n", sinfo.data);
-	if (estate != NULL && estate->err_stmt != NULL)
+	if (estate != NULL && estate->err_stmt != NULL && estate->err_stmt->lineno > 0)
 		appendStringInfo(str, "    \"statement\":{\n\"lineNumber\":\"%d\",\n\"text\":\"%s\"\n},\n",
 						 estate->err_stmt->lineno,
 						 plpgsql_check__stmt_typename_p(estate->err_stmt));
 
-	else if (strcmp(message, "unused declared variable") == 0)
+	else if (strncmp(message, UNUSED_VARIABLE_TEXT, UNUSED_VARIABLE_TEXT_CHECK_LENGTH) == 0 ||
+			 strncmp(message, NEVER_READ_VARIABLE_TEXT, NEVER_READ_VARIABLE_TEXT_CHECK_LENGTH) == 0)
 		appendStringInfo(str, "    \"statement\":{\n\"lineNumber\":\"%d\",\n\"text\":\"DECLARE\"\n},",
 						 lineno);
 
@@ -1202,8 +1204,8 @@ plpgsql_check_put_profile_statement(plpgsql_check_result_info *ri,
 	else
 		SET_RESULT_INT32(Anum_profiler_statements_parent_stmtid, parent_stmtid);
 
-	if ((exec_stmts + exec_stmts_err) > 0)
-		SET_RESULT_FLOAT8(Anum_profiler_statements_avg_time, ceil(((float8) total_time) / (exec_stmts + exec_stmts_err)) / 1000.0);
+	if ((exec_stmts) > 0)
+		SET_RESULT_FLOAT8(Anum_profiler_statements_avg_time, ceil(((float8) total_time) / (exec_stmts)) / 1000.0);
 	else
 		SET_RESULT_NULL(Anum_profiler_statements_avg_time);
 
