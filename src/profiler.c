@@ -1115,8 +1115,11 @@ merge_stmts_sstats(StmtStats *persist_ss, StmtStats *sstats, int nstatements)
 		_t = &persist_ss[i];
 		_s = &sstats[i];
 
-		_t->queryid = _s->queryid;
-		_t->has_queryid = _s->has_queryid;
+		if (_s->has_queryid)
+		{
+			_t->queryid = _s->queryid;
+			_t->has_queryid = _s->has_queryid;
+		}
 
 		if (_t->us_max < _s->us_max)
 			_t->us_max = _s->us_max;
@@ -1857,6 +1860,7 @@ shared_iterate_over_all_profiles(plpgsql_check_result_info *ri)
 {
 	HASH_SEQ_STATUS seqstatus;
 	FuncStats  *fs;
+	FuncStats	locfs;
 
 	LWLockAcquire(profiler_ss->func_stats_lock, LW_SHARED);
 
@@ -1874,33 +1878,29 @@ shared_iterate_over_all_profiles(plpgsql_check_result_info *ri)
 		if (fs->hk.db_oid != MyDatabaseId)
 			continue;
 
+		/* Don't hold spin lock long time */
 		SpinLockAcquire(&fs->mutex);
+		memcpy(&locfs, fs, sizeof(FuncStats));
+		SpinLockRelease(&fs->mutex);
 
-		PG_TRY();
+		fs = &locfs;
+
+		/* check if function still exists */
+		tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(fs->hk.fn_oid));
+		if (HeapTupleIsValid(tp))
 		{
-			/* check if function still exists */
-			tp = SearchSysCache1(PROCOID, ObjectIdGetDatum(fs->hk.fn_oid));
-			if (HeapTupleIsValid(tp))
-			{
-				plpgsql_check_put_profiler_functions_all_tb(ri,
-															fs->hk.fn_oid,
-															fs->exec_count,
-															fs->exec_count_err,
-															(double) fs->total_time,
-															ceil(fs->total_time_mean),
-															ceil(fstats_stddev(fs)),
-															(double) fs->min_time,
-															(double) fs->max_time);
+			plpgsql_check_put_profiler_functions_all_tb(ri,
+														fs->hk.fn_oid,
+														fs->exec_count,
+														fs->exec_count_err,
+														(double) fs->total_time,
+														ceil(fs->total_time_mean),
+														ceil(fstats_stddev(fs)),
+														(double) fs->min_time,
+														(double) fs->max_time);
 
-				ReleaseSysCache(tp);
-			}
-
+			ReleaseSysCache(tp);
 		}
-		PG_FINALLY();
-		{
-			SpinLockRelease(&fs->mutex);
-		}
-		PG_END_TRY();
 	}
 
 	LWLockRelease(profiler_ss->func_stats_lock);
@@ -2013,6 +2013,26 @@ local_statements_stats_report(plch_fidentity_hk *hk,
 }
 
 /*
+ * do local copy of shared statement statistics
+ */
+static StmtStats *
+statement_stats_local_copy(FuncStmtsStats *fss)
+{
+	size_t			ss_size = fss->nstatements * sizeof(StmtStats);
+	StmtStats	   *result;
+
+	result = palloc(ss_size);
+
+	SpinLockAcquire(&fss->mutex);
+
+	memcpy(result, &SharedStmtStatsArray[fss->shared_sstats_offset], ss_size);
+
+	SpinLockRelease(&fss->mutex);
+
+	return result;
+}
+
+/*
  * shared variant is more complex, we need to protect against race condition
  */
 static void
@@ -2022,6 +2042,7 @@ shared_statements_stats_report(plch_fidentity_hk *hk,
 {
 	FuncStmtsStats *fss;
 	bool		found;
+	StmtStats   *loc_sstats = NULL;
 
 	LWLockAcquire(profiler_ss->func_stmts_stats_lock, LW_SHARED);
 
@@ -2032,25 +2053,14 @@ shared_statements_stats_report(plch_fidentity_hk *hk,
 
 	if (found)
 	{
-		SpinLockAcquire(&fss->mutex);
-		context->sstats = &SharedStmtStatsArray[fss->shared_sstats_offset];
+		loc_sstats = statement_stats_local_copy(fss);
+		context->sstats = loc_sstats;
 	}
 
-	PG_TRY();
-	{
-		statement_stats_report_walker(stmt, context);
-	}
-	PG_CATCH();
-	{
-		if (found)
-			SpinLockRelease(&fss->mutex);
+	statement_stats_report_walker(stmt, context);
 
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
-	if (found)
-		SpinLockRelease(&fss->mutex);
+	if (loc_sstats)
+		pfree(loc_sstats);
 
 	LWLockRelease(profiler_ss->func_stmts_stats_lock);
 }
@@ -2596,26 +2606,12 @@ shared_coverage_compute(plch_fidentity_hk *hk, PLpgSQL_stmt *stmt, int ct)
 										 &found);
 
 	if (found)
-	{
-		SpinLockAcquire(&fss->mutex);
-		sstats = &SharedStmtStatsArray[fss->shared_sstats_offset];
-	}
+		sstats = statement_stats_local_copy(fss);
 
-	PG_TRY();
-	{
-		result = coverage_compute(stmt, sstats, ct);
-	}
-	PG_CATCH();
-	{
-		if (found)
-			SpinLockRelease(&fss->mutex);
+	result = coverage_compute(stmt, sstats, ct);
 
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
-	if (found)
-		SpinLockRelease(&fss->mutex);
+	if (sstats)
+		pfree(sstats);
 
 	LWLockRelease(profiler_ss->func_stmts_stats_lock);
 
