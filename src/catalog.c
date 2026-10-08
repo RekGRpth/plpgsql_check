@@ -62,12 +62,11 @@ plpgsql_check_get_function_info(plpgsql_check_info *cinfo)
 	cinfo->is_procedure = proc->prokind == PROKIND_PROCEDURE;
 
 	/*
-	 * Disallow pseudotype result  except for TRIGGER, RECORD, VOID, or
-	 * polymorphic
+	 * Disallow pseudotype results except TRIGGER, EVENT_TRIGGER, RECORD,
+	 * VOID, or polymorphic types.
 	 */
 	if (functyptype == TYPTYPE_PSEUDO)
 	{
-		/* we assume OPAQUE with no arguments means a trigger */
 		if (proc->prorettype == TRIGGEROID)
 			cinfo->trigtype = PLPGSQL_DML_TRIGGER;
 		else if (proc->prorettype == EVENT_TRIGGEROID)
@@ -131,6 +130,12 @@ plpgsql_check_precheck_conditions(plpgsql_check_info *cinfo)
 	/* profiler doesn't require trigger data check */
 	if (!cinfo->show_profile)
 	{
+		if ((cinfo->oldtable || cinfo->newtable) && !OidIsValid(cinfo->relid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("missing description of oldtable or newtable"),
+					 errhint("Parameter relid is a empty.")));
+
 		/* dml trigger needs valid relid, others not */
 		if (cinfo->trigtype == PLPGSQL_DML_TRIGGER)
 		{

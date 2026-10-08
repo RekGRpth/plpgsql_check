@@ -18,6 +18,7 @@
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
+#include "mb/pg_wchar.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -473,6 +474,8 @@ text_format_parse_format(const char *start_ptr,
 						 const char *end_ptr,
 						 int *argpos,
 						 int *widthpos,
+						 int *width,
+						 bool *left_justify,
 						 int location,
 						 check_funcexpr_walker_params *wp,
 						 bool *is_error)
@@ -484,6 +487,8 @@ text_format_parse_format(const char *start_ptr,
 	/* set defaults for output parameters */
 	*argpos = -1;
 	*widthpos = -1;
+	*width = 0;
+	*left_justify = false;
 	*is_error = false;
 
 	/* try to identify first number */
@@ -496,6 +501,7 @@ text_format_parse_format(const char *start_ptr,
 		if (*cp != '$')
 		{
 			/* Must be just a width and a type, so we're done */
+			*width = n;
 			return cp;
 		}
 		/* The number was argument position */
@@ -524,6 +530,7 @@ text_format_parse_format(const char *start_ptr,
 	/* Handle flags (only minus is supported now) */
 	while (*cp == '-')
 	{
+		*left_justify = true;
 		ADVANCE_PARSE_POINTER(cp, end_ptr);
 		if (*is_error)
 			return NULL;
@@ -586,13 +593,25 @@ text_format_parse_format(const char *start_ptr,
 	else
 	{
 		/* Check for direct width specification */
-		(void) text_format_parse_digits(&cp, end_ptr, &n, location, wp, is_error);
+		(void) text_format_parse_digits(&cp, end_ptr, width, location, wp, is_error);
 		if (*is_error)
 			return NULL;
 	}
 
 	/* cp should now be pointing at type character */
 	return cp;
+}
+
+static void
+append_format_string(StringInfo buf, const char *str, int width, bool left_justify)
+{
+	int			padding = width > 0 ? Max(width - pg_mbstrlen(str), 0) : 0;
+
+	if (!left_justify)
+		appendStringInfoSpaces(buf, padding);
+	appendStringInfoString(buf, str);
+	if (left_justify)
+		appendStringInfoSpaces(buf, padding);
 }
 
 #define TOO_FEW_ARGUMENTS_CHECK(arg, nargs) \
@@ -628,8 +647,8 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 	const char *end_ptr = fmt + strlen(fmt);
 	List	   *args = format_get_args(fexpr);
 	int			nargs = list_length(args);
-	int			arg = 1;
-	int			_arg;
+	int64		arg = 1;
+	int64		_arg;
 	bool		is_error;
 
 	*found_ident_placeholder = false;
@@ -649,6 +668,8 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 	{
 		int			argpos;
 		int			widthpos;
+		int			width;
+		bool		left_justify;
 
 		if (*cp != '%')
 		{
@@ -670,7 +691,7 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 
 		/* Parse the optional portions of the format specifier */
 		cp = text_format_parse_format(cp, end_ptr,
-									  &argpos, &widthpos,
+									  &argpos, &widthpos, &width, &left_justify,
 									  -1, NULL, &is_error);
 
 		if (is_error || strchr("sIL", *cp) == NULL)
@@ -681,14 +702,17 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 
 		if (widthpos >= 0)
 		{
+			Node	   *widthnode;
+			char	   *widthstr;
+
 			if (widthpos > 0)
 			{
-				if (widthpos + 1 > nargs)
+				if ((int64) widthpos + 1 > nargs)
 				{
 					pfree(sinfo.data);
 					return NULL;
 				}
-				arg = widthpos + 1;
+				arg = (int64) widthpos + 1;
 			}
 			else
 			{
@@ -698,9 +722,34 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 					return NULL;
 				}
 			}
+
+			widthnode = list_nth(args, arg - 1);
+			if (IsA(widthnode, Const) && ((Const *) widthnode)->constisnull)
+				width = 0;
+			else
+			{
+				widthstr = plpgsql_check_get_const_string(cstate, widthnode, NULL);
+				if (!widthstr)
+				{
+					pfree(sinfo.data);
+					*expr_is_const = false;
+					return NULL;
+				}
+				width = pg_strtoint32(widthstr);
+			}
 		}
 
-		_arg = argpos >= 1 ? argpos + 1 : arg + 1;
+		if (width < 0)
+		{
+			if (width == PG_INT32_MIN)
+				ereport(ERROR,
+						(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+						 errmsg("number is out of range")));
+			width = -width;
+			left_justify = true;
+		}
+
+		_arg = argpos >= 1 ? (int64) argpos + 1 : arg + 1;
 		if (_arg <= nargs)
 		{
 			Node	   *argnode = list_nth(args, _arg - 1);
@@ -718,17 +767,17 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 				}
 				if (!str)
 				{
-					appendStringInfoString(&sinfo, "\"%I\"");
+					append_format_string(&sinfo, "\"%I\"", width, left_justify);
 					*found_ident_placeholder = true;
 					*expr_is_const = false;
 				}
 				else
-					appendStringInfoString(&sinfo, quote_identifier(str));
+					append_format_string(&sinfo, quote_identifier(str), width, left_justify);
 			}
 			else if (*cp == 'L')
 			{
 				if (isnull)
-					appendStringInfoString(&sinfo, "NULL");
+					append_format_string(&sinfo, "NULL", width, left_justify);
 				else if (!str)
 				{
 					/*
@@ -736,7 +785,7 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 					 * parameters requires known type, so most safe value is
 					 * NULL instead.
 					 */
-					appendStringInfoString(&sinfo, " null ");
+					append_format_string(&sinfo, " null ", width, left_justify);
 					*found_literal_placeholder = true;
 					*expr_is_const = false;
 				}
@@ -744,7 +793,7 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 				{
 					char	   *qstr = quote_literal_cstr(str);
 
-					appendStringInfoString(&sinfo, qstr);
+					append_format_string(&sinfo, qstr, width, left_justify);
 					pfree(qstr);
 				}
 			}
@@ -760,18 +809,18 @@ plpgsql_check_get_formatted_string(PLpgSQL_checkstate *cstate,
 					return NULL;
 				}
 				else
-					appendStringInfoString(&sinfo, str);
+					append_format_string(&sinfo, str, width, left_justify);
 			}
 		}
 
 		if (argpos >= 1)
 		{
-			if (argpos + 1 > nargs)
+			if ((int64) argpos + 1 > nargs)
 			{
 				pfree(sinfo.data);
 				return NULL;
 			}
-			arg = argpos + 1;
+			arg = (int64) argpos + 1;
 		}
 		else
 		{
@@ -803,7 +852,8 @@ check_fmt_string(const char *fmt,
 	const char *end_ptr = fmt + strlen(fmt);
 	int			nargs = args ? list_length(args) : -1;
 	int			required_nargs = args ? 0 : -1;
-	int			arg = 1;
+	/* Parsed positions can be INT_MAX; leave room for the format argument. */
+	int64		arg = 1;
 
 	*is_error = false;
 
@@ -812,6 +862,8 @@ check_fmt_string(const char *fmt,
 	{
 		int			argpos;
 		int			widthpos;
+		int			width;
+		bool		left_justify;
 
 		if (*cp != '%')
 			continue;
@@ -826,7 +878,7 @@ check_fmt_string(const char *fmt,
 
 		/* Parse the optional portions of the format specifier */
 		cp = text_format_parse_format(cp, end_ptr,
-									  &argpos, &widthpos,
+									  &argpos, &widthpos, &width, &left_justify,
 									  location, wp, is_error);
 
 		if (*is_error)
@@ -869,8 +921,8 @@ check_fmt_string(const char *fmt,
 		{
 			if (widthpos > 0)
 			{
-				TOO_FEW_ARGUMENTS_CHECK(widthpos + 1, nargs);
-				arg = widthpos + 1;
+				TOO_FEW_ARGUMENTS_CHECK((int64) widthpos + 1, nargs);
+				arg = (int64) widthpos + 1;
 				required_nargs = -1;
 			}
 			else
@@ -886,7 +938,7 @@ check_fmt_string(const char *fmt,
 		{
 			if (*cp == 's')
 			{
-				int			argn = argpos >= 1 ? argpos + 1 : arg + 1;
+				int64		argn = argpos >= 1 ? (int64) argpos + 1 : arg + 1;
 
 				/*
 				 * this is usually called after format check, but better be
@@ -909,8 +961,8 @@ check_fmt_string(const char *fmt,
 
 		if (argpos >= 1)
 		{
-			TOO_FEW_ARGUMENTS_CHECK(argpos + 1, nargs);
-			arg = argpos + 1;
+			TOO_FEW_ARGUMENTS_CHECK((int64) argpos + 1, nargs);
+			arg = (int64) argpos + 1;
 			required_nargs = -1;
 		}
 		else

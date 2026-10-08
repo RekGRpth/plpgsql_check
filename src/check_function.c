@@ -658,7 +658,7 @@ function_check(PLpgSQL_function *func, PLpgSQL_checkstate *cstate)
 
 	/*
 	 * In pragma generation mode, only scan the function's body for CREATE
-	 * TEMP TABLE ... AS statements. The check is skipped completely.
+	 * TEMP TABLE statements, including AS. Ordinary checks are skipped.
 	 */
 	if (cstate->cinfo->make_pragma)
 	{
@@ -758,7 +758,7 @@ trigger_check(PLpgSQL_function *func, Node *tdata, PLpgSQL_checkstate *cstate)
 
 	/*
 	 * In pragma generation mode, only scan the function's body for CREATE
-	 * TEMP TABLE ... AS statements. The check is skipped completely.
+	 * TEMP TABLE statements, including AS. Ordinary checks are skipped.
 	 */
 	if (cstate->cinfo->make_pragma)
 	{
@@ -856,6 +856,14 @@ replace_polymorphic_type(plpgsql_check_info *cinfo,
 				typ = is_variadic ? get_array_type(cinfo->anyrangeoid) : cinfo->anyrangeoid;
 				break;
 
+			case ANYMULTIRANGEOID:
+				typ = get_range_multirange(cinfo->anyrangeoid);
+				if (!OidIsValid(typ))
+					elog(ERROR, "type specified by anyrangetype option is not range");
+				if (is_variadic)
+					typ = get_array_type(typ);
+				break;
+
 			case ANYCOMPATIBLEOID:
 				typ = is_variadic ? anycompatible_array_oid : cinfo->anycompatibleoid;
 				break;
@@ -872,6 +880,14 @@ replace_polymorphic_type(plpgsql_check_info *cinfo,
 
 			case ANYCOMPATIBLERANGEOID:
 				typ = is_variadic ? get_array_type(cinfo->anycompatiblerangeoid) : cinfo->anycompatiblerangeoid;
+				break;
+
+			case ANYCOMPATIBLEMULTIRANGEOID:
+				typ = get_range_multirange(cinfo->anycompatiblerangeoid);
+				if (!OidIsValid(typ))
+					elog(ERROR, "type specified by anycompatiblerangetype option is not range");
+				if (is_variadic)
+					typ = get_array_type(typ);
 				break;
 
 			default:
@@ -1461,9 +1477,8 @@ copy_plpgsql_datum(PLpgSQL_checkstate *cstate, PLpgSQL_datum *datum)
 		case PLPGSQL_DTYPE_RECFIELD:
 
 			/*
-			 * These datum records are read-only at runtime, so no need to
-			 * copy them (well, ARRAYELEM contains some cached type data, but
-			 * we'd just as soon centralize the caching anyway)
+			 * Share row definitions and record-field metadata, including
+			 * cached field type information, with the compiled function.
 			 */
 			result = datum;
 			break;
