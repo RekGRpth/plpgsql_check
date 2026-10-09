@@ -1298,8 +1298,8 @@ static void
 invalidate_strconstvars(PLpgSQL_checkstate *cstate)
 {
 	/*
-	 * We cannot to safely use string constant when we leave related path
-	 * (maybe we can, but it needs deeper analyze ensure so we will provess
+	 * We cannot safely use string constant when we leave related path
+	 * (maybe we can, but it needs deeper analyze ensure so we will process
 	 * all possible variants).
 	 */
 	if (cstate->top_stmts->invalidate_strconstvars)
@@ -2097,20 +2097,20 @@ check_dynamic_sql(PLpgSQL_checkstate *cstate,
 		DynSQLParams dsp;
 		volatile bool is_ok = true;
 
+		dynexpr = palloc0(sizeof(PLpgSQL_expr));
+
+		dynexpr->expr_rw_param = NULL;
+		dynexpr->query = dynquery;
+
+		dsp.args = params;
+		dsp.cstate = cstate;
+		dsp.use_params = false;
+
 		PG_TRY();
 		{
 			cstate->allow_mp = true;
 			cstate->is_dynsql = true;
-
 			cstate->found_mp = false;
-
-			dynexpr = palloc0(sizeof(PLpgSQL_expr));
-			dynexpr->expr_rw_param = NULL;
-			dynexpr->query = dynquery;
-
-			dsp.args = params;
-			dsp.cstate = cstate;
-			dsp.use_params = false;
 
 			if (expr_is_const)
 			{

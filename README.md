@@ -599,6 +599,10 @@ There are some limitations to the query identifier retrieval:
 * a query identifier is retrieved only for instructions containing
   expressions.  This means that plpgsql_profiler_function_tb() function can
   report less query identifier than instructions on a single line.
+* query_id of dynamically executed queries are reported only when
+  `plpgsql_check.profiler_show_dynquery_query_id` is on (default is off).
+  Attention: in this case, the expression that produce query string is
+  executed second by profiler.
 
 Attention: An update of shared profiles can decrease performance on servers under higher load.
 
@@ -680,6 +684,9 @@ plpgsql_check provides two functions:
 
 The coverage data are collected only when profiling is active.
 
+An exception while evaluating an `IF` or `ELSIF` condition does not cover a
+branch, including an implicit `ELSE`. An exception after entering a branch
+does count as reaching that branch.
 
 ## Note
 
@@ -1167,7 +1174,7 @@ extension library and SQL files.
 
 ## Testing prerequisites
 
-Use a supported PostgreSQL version (14 - 19). The `plpgsql_check_tablefunc`
+Use a supported PostgreSQL version (14 - 20). The `plpgsql_check_tablefunc`
 regression test exercises XML output with `xpath`, so PostgreSQL must be built
 with libxml support. The standalone ordinary-user review reproducers are
 documented separately in [reproducers/README.md](reproducers/README.md).

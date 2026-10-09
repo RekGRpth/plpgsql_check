@@ -261,7 +261,11 @@ prepare_plan(PLpgSQL_checkstate *cstate,
 		if (!plansource)
 			return;
 		if (!plansource->is_valid)
+		{
+			SPI_freeplan(expr->plan);
 			expr->plan = NULL;
+			cstate->exprs = list_delete_last(cstate->exprs);
+		}
 	}
 	while (!plansource->is_valid);
 
@@ -293,12 +297,14 @@ prepare_plan(PLpgSQL_checkstate *cstate,
 					plpgsql_check_detect_dependency(cstate, query);
 				}
 
-				cplan = GetCachedPlan(plansourcesub, NULL, NULL, NULL);
+				cplan = GetCachedPlan(plansourcesub, NULL, CurrentResourceOwner, NULL);
 
 				prohibit_write_plan(cstate, cplan, expr->query);
 
 				/* disallow BEGIN TRANS, COMMIT, ROLLBACK, .. */
 				prohibit_transaction_stmt(cstate, cplan, expr->query);
+
+				ReleaseCachedPlan(cplan, CurrentResourceOwner);
 			}
 		}
 	}
@@ -779,7 +785,7 @@ get_cached_plan(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, bool *has_result
 
 	*has_result_desc = plansource->resultDesc ? true : false;
 
-	cplan = GetCachedPlan(plansource, NULL, NULL, NULL);
+	cplan = GetCachedPlan(plansource, NULL, CurrentResourceOwner, NULL);
 
 	return cplan;
 }
@@ -941,11 +947,21 @@ plpgsql_check_expr_get_node(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, bool
 			TargetEntry *tle;
 
 			tle = (TargetEntry *) linitial(_plan->targetlist);
-			result = (Node *) tle->expr;
+
+			/*
+			 * plpgsql_check in active mode doesn't generate one shot plans,
+			 * so there should not be a risk of memory releasing plan context
+			 * by ReleaseCachedPlan, and poisoning memory referenced by result
+			 * pointer. On second hand, return direct pointer is dirty (when
+			 * plan is "released" immediately. Using copyObject is probabably
+			 * not necessary, but it is more robust, safe and reduces possible
+			 * bugs in future.
+			 */
+			result = copyObject((Node *) tle->expr);
 		}
 	}
 
-	ReleaseCachedPlan(cplan, NULL);
+	ReleaseCachedPlan(cplan, CurrentResourceOwner);
 
 	return result;
 }
@@ -1092,7 +1108,7 @@ force_plan_checks(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr)
 	/* do all checks for this plan, reduce a access to plan cache */
 	plan_checks(cstate, cplan, expr->query);
 
-	ReleaseCachedPlan(cplan, NULL);
+	ReleaseCachedPlan(cplan, CurrentResourceOwner);
 }
 
 /*
