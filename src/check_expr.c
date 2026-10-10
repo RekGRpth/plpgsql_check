@@ -1212,8 +1212,10 @@ plpgsql_check_expr_with_scalar_type(PLpgSQL_checkstate *cstate,
 		 */
 		if (cstate->cinfo->fatal_errors)
 			ReThrowError(edata);
-		else
-			plpgsql_check_put_error_edata(cstate, edata);
+
+		plpgsql_check_put_error_edata(cstate, edata);
+		FreeErrorData(edata);
+
 		MemoryContextSwitchTo(oldCxt);
 	}
 	PG_END_TRY();
@@ -1371,8 +1373,10 @@ plpgsql_check_returned_expr_with_parser_setup(PLpgSQL_checkstate *cstate,
 		 */
 		if (cstate->cinfo->fatal_errors)
 			ReThrowError(edata);
-		else
-			plpgsql_check_put_error_edata(cstate, edata);
+
+		plpgsql_check_put_error_edata(cstate, edata);
+		FreeErrorData(edata);
+
 		MemoryContextSwitchTo(oldCxt);
 	}
 	PG_END_TRY();
@@ -1447,7 +1451,7 @@ plpgsql_check_expr_as_rvalue_with_parser_setup(PLpgSQL_checkstate *cstate,
 		plpgsql_check_target(cstate, targetdno, &expected_typoid, &expected_typmod);
 
 		/*
-		 * When target variable is not compossite, then we should not to
+		 * When target variable is not composite, then we should not
 		 * expand result tupdesc.
 		 */
 		if (!type_is_rowtype(expected_typoid))
@@ -1873,8 +1877,10 @@ no_other_check:
 		 */
 		if (cstate->cinfo->fatal_errors)
 			ReThrowError(edata);
-		else
-			plpgsql_check_put_error_edata(cstate, edata);
+
+		plpgsql_check_put_error_edata(cstate, edata);
+		FreeErrorData(edata);
+
 		MemoryContextSwitchTo(oldCxt);
 	}
 	PG_END_TRY();
@@ -1919,7 +1925,7 @@ plpgsql_check_expr_as_sqlstmt_data(PLpgSQL_checkstate *cstate, PLpgSQL_expr *exp
 }
 
 /*
- * Check a SQL statement, can (not) returs data. Returns true
+ * Check a SQL statement, can (not) return data. Returns true
  * when statement returns data - we are able to get tuple descriptor.
  */
 bool
@@ -1975,8 +1981,10 @@ plpgsql_check_expr_as_sqlstmt(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr)
 		 */
 		if (cstate->cinfo->fatal_errors)
 			ReThrowError(edata);
-		else
-			plpgsql_check_put_error_edata(cstate, edata);
+
+		plpgsql_check_put_error_edata(cstate, edata);
+		FreeErrorData(edata);
+
 		MemoryContextSwitchTo(oldCxt);
 	}
 	PG_END_TRY();
