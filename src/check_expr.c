@@ -253,6 +253,7 @@ prepare_plan(PLpgSQL_checkstate *cstate,
 {
 	Query	   *query;
 	CachedPlanSource *plansource = NULL;
+	bool		is_valid;
 
 	do
 	{
@@ -260,14 +261,18 @@ prepare_plan(PLpgSQL_checkstate *cstate,
 		plansource = plpgsql_check_get_plan_source(cstate, expr->plan);
 		if (!plansource)
 			return;
-		if (!plansource->is_valid)
+
+		is_valid = plansource->is_valid;
+
+		if (!is_valid)
 		{
+			/* replan plan because it is invalid */
+			cstate->exprs = list_delete(cstate->exprs, expr->plan);
 			SPI_freeplan(expr->plan);
 			expr->plan = NULL;
-			cstate->exprs = list_delete_last(cstate->exprs);
 		}
 	}
-	while (!plansource->is_valid);
+	while (!is_valid);
 
 	if (list_length(expr->plan->plancache_list) > 1)
 	{
@@ -1180,11 +1185,18 @@ plpgsql_check_expr_with_scalar_type(PLpgSQL_checkstate *cstate,
 		{
 			/* when we know value or type */
 			if (!is_immutable_null)
+			{
+				if (tupdesc->natts != 1)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATATYPE_MISMATCH),
+							 errmsg("unexpected non-scalar value")));
+
 				plpgsql_check_assign_to_target_type(cstate,
 													expected_typoid, -1,
 													TupleDescAttr(tupdesc, 0)->atttypid,
 													is_immutable_null,
 													-1);
+			}
 
 			ReleaseTupleDesc(tupdesc);
 		}
@@ -1296,7 +1308,39 @@ plpgsql_check_returned_expr_with_parser_setup(PLpgSQL_checkstate *cstate,
 										0, NULL, NULL);
 		}
 
-		if (tupdesc)
+		if (!func->fn_retistuple && is_expression && type_is_rowtype(first_level_typ))
+		{
+			/*
+			 * PL/pgSQL try to use IO conversion, so we are not sure, how
+			 * this conversion is strict. But We can be sure so any composite
+			 * cannot be converted to any numeric.
+			 */
+			if (!is_immutable_null)
+			{
+				bool		typispreferred;
+				char		typcategory;
+				Oid			base_rettype;
+
+				base_rettype = getBaseType(func->fn_rettype);
+
+				get_type_category_preferred(base_rettype, &typcategory, &typispreferred);
+
+				/*
+				 * when source type is composite, and target is numeric, then
+				 * there is a high probability of some error.
+				 */
+				if (typcategory == 'N')
+					plpgsql_check_put_error(cstate,
+											ERRCODE_DATATYPE_MISMATCH, 0,
+											"cannot return composite value from function returning number",
+											NULL,
+											NULL,
+											PLPGSQL_CHECK_ERROR,
+											0, NULL, NULL);
+			}
+		}
+
+		if (tupdesc && tupdesc->natts > 0)
 		{
 			/* enforce check for trigger function - result must be composit */
 			if (func->fn_retistuple && is_expression
@@ -1539,8 +1583,17 @@ plpgsql_check_expr_as_rvalue_with_parser_setup(PLpgSQL_checkstate *cstate,
 						/*
 						 * Assignment casts, including element casts in an
 						 * array, need not agree with textual input.
+						 *
+						 * get_array_type() returns InvalidOid when no array
+						 * type exists for expected_typoid - for instance when
+						 * the loop variable of a FOREACH ... IN ARRAY is itself
+						 * an array type.  There is then no target type to probe,
+						 * and getTypeInputInfo(InvalidOid) would fail with an
+						 * internal "cache lookup failed for type 0", so skip the
+						 * probe.
 						 */
-						if (!can_coerce_type(1, &expr_typoid, &typeid, COERCION_ASSIGNMENT))
+						if (OidIsValid(typeid) &&
+							!can_coerce_type(1, &expr_typoid, &typeid, COERCION_ASSIGNMENT))
 						{
 							getTypeInputInfo(typeid, &infunc, &intypeioparam);
 							(void) OidInputFunctionCall(infunc, str, intypeioparam, -1);

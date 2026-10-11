@@ -891,3 +891,82 @@ SELECT repro03_run();
 -- buggy: 2 - the profiler evaluated repro03_gen() a second time
 SELECT currval('repro03_seq') AS "nextval calls with profiler on";
 
+
+-- Use-after-free and NULL-pointer dereference in prepare_plan()'s retry loop.
+CREATE TABLE uaf_t (a int);
+
+CREATE FUNCTION uaf_f() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  v int;
+BEGIN
+  SELECT count(*) INTO v FROM uaf_t;
+  RETURN v;
+END;
+$$;
+
+-- Execute the function so PL/pgSQL caches its run-time plan in expr->plan.
+SELECT uaf_f();
+
+-- Invalidate that cached plan with ordinary DDL.
+ALTER TABLE uaf_t ADD COLUMN b int;
+
+-- should not crash
+SELECT count(*) >= 0
+     FROM plpgsql_check_function('uaf_f()');
+
+DROP TABLE uaf_t;
+DROP FUNCTION uaf_f;
+
+CREATE TABLE tt_tab (a int);
+
+CREATE FUNCTION tt_trg()
+RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN NULL;
+END;
+$$;
+
+DO $$
+BEGIN
+  PERFORM *
+     FROM plpgsql_check_function('tt_trg()', 'tt_tab',
+                                 oldtable => 'dup', newtable => 'dup');
+EXCEPTION WHEN OTHERS THEN
+  -- A clean error is the fixed behaviour; we only require that the backend
+  -- did not crash.
+  NULL;
+END;
+$$;
+
+DROP TABLE IF EXISTS tt_tab;
+DROP FUNCTION tt_trg();
+
+CREATE TYPE empty_comp AS ();
+
+CREATE FUNCTION oob_if() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  r empty_comp;
+BEGIN
+  IF r THEN
+    RETURN 1;
+  END IF;
+  RETURN 0;
+END;
+$$;
+
+CREATE FUNCTION oob_ret() RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  r empty_comp;
+BEGIN
+  RETURN (r);
+END;
+$$;
+
+SELECT * FROM plpgsql_check_function('oob_if()', fatal_errors => false);
+SELECT * FROM plpgsql_check_function('oob_ret()', fatal_errors => false);
+
+DROP FUNCTION oob_if;
+DROP FUNCTION oob_ret;
+
+DROP TYPE empty_comp;

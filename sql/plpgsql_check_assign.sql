@@ -418,3 +418,72 @@ drop type as_wrapper;
 drop type as_leaf;
 
 drop table as_tab1;
+
+create type point2 as (x int, y int);
+create domain dpoint as point2 check ((value).x is not null);
+
+-- a) domain-over-composite as a parameter
+create function dom_param(p dpoint)
+returns int
+language plpgsql as $$
+begin
+  return p.x;
+end;
+$$;
+
+-- b) domain-over-composite as an initialized local variable
+create function dom_var()
+returns int
+language plpgsql as $$
+declare
+  r dpoint := row(1, 2)::dpoint;
+begin
+  return r.x;
+end;
+$$;
+
+select count(*) = 0
+     from plpgsql_check_function_tb('dom_param(dpoint)', fatal_errors => false)
+    where message like '%violates check constraint%';
+
+select count(*) = 0
+     from plpgsql_check_function_tb('dom_var()', fatal_errors => false)
+    where message like '%violates check constraint%';
+
+drop function dom_var;
+drop function dom_param;
+drop type point2 cascade;
+
+create function foreach_arrvar()
+returns int
+language plpgsql as $$
+declare
+  item  int[];
+  total int := 0;
+begin
+  foreach item in array '{"{1,2}","{3}"}'::text[] loop
+    total := total + cardinality(item);
+  end loop;
+  return total;
+end;
+$$;
+
+select message from plpgsql_check_function_tb('foreach_arrvar()', fatal_errors => false);
+
+drop function foreach_arrvar();
+
+create function stale_ctx()
+returns int
+language plpgsql as $$
+declare
+  r record;
+  unused_v int;          -- produces an "unused variable" warning
+begin
+  r.a := 10;             -- fails: record "r" is not assigned yet; sets err_text
+  return 1;
+end;
+$$;
+
+select * from plpgsql_check_function('stale_ctx', fatal_errors => false);
+
+drop function stale_ctx();
