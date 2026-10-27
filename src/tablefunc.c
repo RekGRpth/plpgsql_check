@@ -78,6 +78,7 @@ plpgsql_check_set_all_warnings(plpgsql_check_info *cinfo)
 	cinfo->extra_warnings = true;
 	cinfo->security_warnings = true;
 	cinfo->compatibility_warnings = true;
+	cinfo->extra_security_warnings_level = 4;
 }
 
 void
@@ -88,6 +89,7 @@ plpgsql_check_set_without_warnings(plpgsql_check_info *cinfo)
 	cinfo->extra_warnings = false;
 	cinfo->security_warnings = false;
 	cinfo->compatibility_warnings = false;
+	cinfo->extra_security_warnings_level = 0;
 }
 
 /*
@@ -132,7 +134,7 @@ check_function_internal(Oid fnoid, FunctionCallInfo fcinfo)
 
 	plpgsql_check_check_ext_version(fcinfo->flinfo->fn_oid);
 
-	Assert(PG_NARGS() == 22);
+	Assert(PG_NARGS() == 23);
 
 	/* check to see if caller supports us returning a tuplestore */
 	rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -174,6 +176,8 @@ check_function_internal(Oid fnoid, FunctionCallInfo fcinfo)
 		ERR_NULL_OPTION("incomment_options_usage_warning");
 	if (PG_ARGISNULL(20))
 		ERR_NULL_OPTION("constants_tracing");
+	if (PG_ARGISNULL(22))
+		ERR_NULL_OPTION("extra_security_warnings_level");
 
 	format = plpgsql_check_format_num(text_to_cstring(PG_GETARG_TEXT_PP(2)));
 
@@ -186,9 +190,9 @@ check_function_internal(Oid fnoid, FunctionCallInfo fcinfo)
 	cinfo.extra_warnings = PG_GETARG_BOOL(6);
 	cinfo.security_warnings = PG_GETARG_BOOL(7);
 	cinfo.compatibility_warnings = PG_GETARG_BOOL(8);
-
 	cinfo.incomment_options_usage_warning = PG_GETARG_BOOL(19);
 	cinfo.constants_tracing = PG_GETARG_BOOL(20);
+	cinfo.extra_security_warnings_level = PG_GETARG_INT32(22);
 
 	if (!PG_ARGISNULL(21))
 		cinfo.pragmas = get_pragmas_list(PG_GETARG_ARRAYTYPE_P(21));
@@ -280,7 +284,7 @@ check_function_tb_internal(Oid fnoid, FunctionCallInfo fcinfo)
 
 	plpgsql_check_check_ext_version(fcinfo->flinfo->fn_oid);
 
-	Assert(PG_NARGS() == 21);
+	Assert(PG_NARGS() == 22);
 
 	/* check to see if caller supports us returning a tuplestore */
 	rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
@@ -321,6 +325,8 @@ check_function_tb_internal(Oid fnoid, FunctionCallInfo fcinfo)
 		ERR_NULL_OPTION("incomment_options_usage_warning");
 	if (PG_ARGISNULL(19))
 		ERR_NULL_OPTION("constants_tracing");
+	if (PG_ARGISNULL(21))
+		ERR_NULL_OPTION("extra_security_warnings_level");
 
 
 	plpgsql_check_info_init(&cinfo, fnoid);
@@ -335,6 +341,7 @@ check_function_tb_internal(Oid fnoid, FunctionCallInfo fcinfo)
 
 	cinfo.incomment_options_usage_warning = PG_GETARG_BOOL(18);
 	cinfo.constants_tracing = PG_GETARG_BOOL(19);
+	cinfo.extra_security_warnings_level = PG_GETARG_INT32(21);
 
 	if (!PG_ARGISNULL(20))
 		cinfo.pragmas = get_pragmas_list(PG_GETARG_ARRAYTYPE_P(20));
