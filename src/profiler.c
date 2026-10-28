@@ -247,8 +247,8 @@ static bool get_plpgsql_expr_type(PLpgSQL_expr *expr, Oid *result_type);
 static char *cutline(char *str, char **line);
 static HTAB *assign_shared_htab(const char *tabname, Size keysize, Size Entrysize, int nelems);
 static void lxcache_reset_callback(void *arg);
-static void merge_lxcached_shared_stmts_stats(LXCache *lxcache, bool *raise_warning);
-static void merge_lxcached_shared_fstats(LXCache *lxcache);
+static void merge_lxcached_shared_stmts_stats(LXCache *lxcache, bool *raise_warning_fss, bool *raise_warning_sstats);
+static void merge_lxcached_shared_fstats(LXCache *lxcache, bool *raise_warning_fs);
 static void merge_fstats(FuncStats *a, FuncStats *b);
 
 static HTAB *func_stats_ht = NULL;
@@ -274,10 +274,10 @@ static int	used_stmt_stats_count = 0;
 static int	estimated_stmt_stats_count = 0;
 
 /*
- * plpgsql_profiler_reset_all destroy lxcache_mcxt. It emits
+ * plpgsql_profiler_reset_all destroys lxcache_mcxt. It emits
  * execution of lxcache_reset_callback. But in this case, we
- * don't want to persistenting the content of lxcache.
- * A flag skip_cirrent_lxcache signalize this case.
+ * don't want to persist the content of lxcache.
+ * A flag skip_current_lxcache signalize this case.
  */
 static bool skip_current_lxcache = false;
 
@@ -470,6 +470,13 @@ plpgsql_check_profiler_ctrl(PG_FUNCTION_ARGS)
 
 /*
  * Reset all local and shared profiler statistics.
+ *
+ * Against pg_stat_statements, the persistent profile is not protected,
+ * and anybody can access these data. We don't see strong reason to implement
+ * some protection, because source code is usually accessable in pg_proc.
+ * The profiler data cannot be used for auditing - the profiler doesn't
+ * ensure storing profile in all cases - so there is not a reason to allow
+ * the reset profiler statistics only to superuser.
  */
 Datum
 plpgsql_profiler_reset_all(PG_FUNCTION_ARGS)
@@ -621,6 +628,17 @@ Datum
 plpgsql_profiler_install_fake_queryid_hook(PG_FUNCTION_ARGS)
 {
 	(void) fcinfo;
+
+	/*
+	 * This hook overwrites the query identifier of every query executed in
+	 * the session, which would corrupt the statistics of pg_stat_statements
+	 * and other query id consumers.  It is intended for regression tests
+	 * only.
+	 */
+	if (!superuser())
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser to install fake queryid hook")));
 
 	if (post_parse_analyze_hook == profiler_fake_queryid_hook)
 		PG_RETURN_VOID();
@@ -784,9 +802,9 @@ lxcache_ht_init(void)
 	ctl.entrysize = sizeof(LXCache);
 
 	/*
-	 * Originally I used lxcache_mcxt for hashtable. Unfortunaly it doesn't
+	 * Originally I used lxcache_mcxt for hashtable. Unfortunately it doesn't
 	 * work, because hashtable creates and uses always own child context, that
-	 * is destroyed before lxcache_mcxt. Becase I need to access lxcache_ht at
+	 * is destroyed before lxcache_mcxt. Because I need to access lxcache_ht at
 	 * transaction end, then I need to use TopMemoryContext, and then destroy
 	 * hashtab explicitly.
 	 */
@@ -844,15 +862,32 @@ get_lxcache(profiler_info *pinfo)
 
 	lxcache = (LXCache *) hash_search(lxcache_ht,
 									  (void *) &hk,
-									  HASH_ENTER,
+									  HASH_ENTER_NULL,
 									  &found);
+
+	/*
+	 * When there is not a memory for new lxcache entry, do nothing.
+	 * It is probably best thing what can be possible, with minimal
+	 * impact on profiled code. In this case, we just lose statistics
+	 * from last run, but we don't break possibly ending transaction.
+	 */
+	if (!lxcache)
+		return NULL;
 
 	if (!found)
 	{
 		init_fstats(&lxcache->fstats);
 		lxcache->nstatements = pinfo->func->nstatements;
-		lxcache->sstats = MemoryContextAlloc(lxcache_mcxt,
-											 lxcache->nstatements * sizeof(StmtStats));
+		lxcache->sstats = MemoryContextAllocExtended(lxcache_mcxt,
+													 lxcache->nstatements * sizeof(StmtStats),
+													 MCXT_ALLOC_NO_OOM);
+		if (!lxcache->sstats)
+		{
+			/* remove invalid lxcache entry */
+			hash_search(lxcache_ht, (void *) &hk, HASH_REMOVE, NULL);
+			return NULL;
+		}
+
 		memset(lxcache->sstats, 0, lxcache->nstatements * sizeof(StmtStats));
 	}
 
@@ -871,7 +906,9 @@ lxcache_reset_callback(void *arg)
 {
 	HASH_SEQ_STATUS seqstatus;
 	LXCache    *lxcache;
-	bool		raise_warning = true;
+	bool		raise_warning_fs = true;
+	bool		raise_warning_fss = true;
+	bool		raise_warning_sstats = true;
 	LXCache_info *lxcinfo = (LXCache_info *) arg;
 
 	if (skip_current_lxcache && lxcache_mcxt == lxcinfo->lxcache_mcxt)
@@ -899,8 +936,9 @@ lxcache_reset_callback(void *arg)
 		while ((lxcache = (LXCache *) hash_seq_search(&seqstatus)) != NULL)
 		{
 			/* don't repeat warning for every lxcached stats */
-			merge_lxcached_shared_stmts_stats(lxcache, &raise_warning);
-			merge_lxcached_shared_fstats(lxcache);
+			merge_lxcached_shared_stmts_stats(lxcache,
+											  &raise_warning_fss, &raise_warning_sstats);
+			merge_lxcached_shared_fstats(lxcache, &raise_warning_fs);
 		}
 	}
 	PG_FINALLY();
@@ -1013,8 +1051,23 @@ update_local_persistent_fstats(profiler_info *pinfo,
 
 	fs = (FuncStats *) hash_search(func_stats_ht,
 								   (void *) &hk,
-								   HASH_ENTER,
+								   HASH_ENTER_NULL,
 								   &found);
+
+	/*
+	 * We want to signalize not enough memory for storing statistics.
+	 * But on second hand we don't want to needlessly break ending transaction,
+	 * so we raise an error, only when transaction is not in aborted state.
+	 */
+	if (!fs)
+	{
+		if (CURRENT_LXID == InvalidLocalTransactionId)
+			return;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("could not create new FuncStats entry for profiler statistics")));
+	}
 
 	if (!found)
 		init_fstats(fs);
@@ -1064,8 +1117,19 @@ update_shared_persistent_fstats(profiler_info *pinfo,
 
 		fs = (FuncStats *) hash_search(shared_func_stats_ht,
 									   (void *) &hk,
-									   HASH_ENTER,
+									   HASH_ENTER_NULL,
 									   &found);
+
+		if (!fs)
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("could not create new FuncStats entry for profiler statistics"),
+					 errhint("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
+
+			LWLockRelease(profiler_ss->func_stats_lock);
+			return;
+		}
 	}
 
 	if (found)
@@ -1101,7 +1165,7 @@ update_persistent_fstats(profiler_info *pinfo,
 
 /* It is executed under exclusive lock */
 static void
-merge_lxcached_shared_fstats(LXCache *lxcache)
+merge_lxcached_shared_fstats(LXCache *lxcache, bool *raise_warning_fs)
 {
 	func_hk		hk;
 	FuncStats  *fs;
@@ -1111,8 +1175,23 @@ merge_lxcached_shared_fstats(LXCache *lxcache)
 
 	fs = (FuncStats *) hash_search(shared_func_stats_ht,
 								   (void *) &hk,
-								   HASH_ENTER,
+								   HASH_ENTER_NULL,
 								   &found);
+
+	if (!fs)
+	{
+		if (*raise_warning_fs)
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("could not create new FuncStats entry for profiler statistics"),
+					 errhint("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
+
+			*raise_warning_fs = false;
+		}
+
+		return;
+	}
 
 	if (!found)
 		init_fstats(fs);
@@ -1189,11 +1268,21 @@ update_local_persistent_stmts_stats(profiler_info *pinfo)
 
 	plch_init_fidentity_hk(&hk, pinfo->func);
 
-	/* don't need too strong lock for reading shared memory */
+	/* don't need too strong lock for reading local memory */
 	fss = (FuncStmtsStats *) hash_search(func_stmts_stats_ht,
 										 (void *) &hk,
-										 HASH_ENTER,
+										 HASH_ENTER_NULL,
 										 &found);
+
+	if (!fss)
+	{
+		if (CURRENT_LXID == InvalidLocalTransactionId)
+			return;
+
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("could not create new FuncStmtStats entry for profiler statistics")));
+	}
 
 	if (!found)
 	{
@@ -1209,7 +1298,7 @@ update_local_persistent_stmts_stats(profiler_info *pinfo)
 					 errmsg("cannot allocate local memory for profiler statistics"),
 					 errdetail("the used memory exceeds \"plpgsql_check.max_stats_size\" (%dkB)",
 							   plch_max_stat_size),
-					 errdetail("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
+					 errhint("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
 
 			return;
 		}
@@ -1222,9 +1311,12 @@ update_local_persistent_stmts_stats(profiler_info *pinfo)
 			/* remove invalid current func_stmts_stats */
 			hash_search(func_stmts_stats_ht, &(fss->hk), HASH_REMOVE, NULL);
 
+			if (CURRENT_LXID == InvalidLocalTransactionId)
+				return;
+
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("out of memory")));
+					 errmsg("Cannot to allocate memory for profiler statement statistics")));
 		}
 
 		memcpy(fss->sstats,
@@ -1277,12 +1369,19 @@ update_shared_persistent_stmts_stats(profiler_info *pinfo)
 
 		fss = (FuncStmtsStats *) hash_search(shared_func_stmts_stats_ht,
 											 (void *) &hk,
-											 HASH_ENTER,
+											 HASH_ENTER_NULL,
 											 &found);
 
 		if (!fss)
-			elog(ERROR,
-				 "cannot to insert new entry to profiler's function statements statistics");
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("could not create new FuncStmtsStats entry for profiler statistics"),
+					 errhint("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
+
+			LWLockRelease(profiler_ss->func_stmts_stats_lock);
+			return;
+		}
 	}
 
 	if (!found)
@@ -1346,15 +1445,33 @@ update_persistent_stmts_stats(profiler_info *pinfo)
  * It is executed under EXCLUSIVE lock
  */
 static void
-merge_lxcached_shared_stmts_stats(LXCache *lxcache, bool *raise_warning)
+merge_lxcached_shared_stmts_stats(LXCache *lxcache,
+								  bool *raise_warning_fss,
+								  bool *raise_warning_sstats)
 {
 	FuncStmtsStats *fss;
 	bool		found;
 
 	fss = (FuncStmtsStats *) hash_search(shared_func_stmts_stats_ht,
 										 (void *) &lxcache->hk,
-										 HASH_ENTER,
+										 HASH_ENTER_NULL,
 										 &found);
+
+	if (!fss)
+	{
+		if (*raise_warning_fss)
+		{
+			/* there are not enough shmem for fss */
+			ereport(WARNING,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("could not create new FuncStmtsStats entry for profiler statistics"),
+					 errhint("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
+
+			*raise_warning_fss = false;
+		}
+
+		return;
+	}
 
 	if (!found)
 	{
@@ -1363,7 +1480,7 @@ merge_lxcached_shared_stmts_stats(LXCache *lxcache, bool *raise_warning)
 			/* remove invalid func stmts stats entry */
 			hash_search(shared_func_stmts_stats_ht, (void *) &(fss->hk), HASH_REMOVE, NULL);
 
-			if (*raise_warning)
+			if (*raise_warning_sstats)
 			{
 				ereport(WARNING,
 						(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
@@ -1372,7 +1489,7 @@ merge_lxcached_shared_stmts_stats(LXCache *lxcache, bool *raise_warning)
 								   plch_max_stat_size),
 						 errhint("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
 
-				*raise_warning = false;
+				*raise_warning_sstats = false;
 			}
 
 			return;
@@ -2130,7 +2247,7 @@ shared_statements_stats_report(plch_fidentity_hk *hk,
  * Build simple statement statistics report (statement profile)
  *
  * This is simple report - one statement, one line (and then there is not any
- * cummulation per lines).
+ * acummulation per lines).
  */
 void
 plch_statements_stats_report(plpgsql_check_info *cinfo,
@@ -2168,7 +2285,7 @@ plch_statements_stats_report(plpgsql_check_info *cinfo,
 }
 
 /*
- * Profiler report is more terrible becase maps statements to lines, and because
+ * Profiler report is more complicated becase maps statements to lines, and because
  * more statements can be placed on one line, then some stats are merged in an arrays.
  * Next complication is synchronization reported stats with function source code.
  */
