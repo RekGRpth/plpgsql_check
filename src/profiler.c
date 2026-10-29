@@ -481,7 +481,7 @@ plpgsql_check_profiler_ctrl(PG_FUNCTION_ARGS)
 Datum
 plpgsql_profiler_reset_all(PG_FUNCTION_ARGS)
 {
-	/* be compiler quite */
+	/* keep compiler quiet */
 	(void) fcinfo;
 
 	if (shared_func_stats_ht)
@@ -687,7 +687,7 @@ profiler_fake_queryid_hook(ParseState *pstate, Query *query, JumbleState *jstate
 	 * force fake queryid
 	 *
 	 * profiler_fake_queryid_hook is active only for one plpgsql_check regress
-	 * test. For this case, we can force fake queryid, althought is possible,
+	 * test. For this case, we can force fake queryid, although it is possible,
 	 * so real queryid (computed by pg_stat_statements) is already computed.
 	 *
 	 * Because this fake queryid hook is designed only for one test, I don't
@@ -860,6 +860,8 @@ get_lxcache(profiler_info *pinfo)
 
 	plch_init_fidentity_hk(&hk, pinfo->func);
 
+#if PG_VERSION_NUM >= 160000
+
 	lxcache = (LXCache *) hash_search(lxcache_ht,
 									  (void *) &hk,
 									  HASH_ENTER_NULL,
@@ -873,6 +875,16 @@ get_lxcache(profiler_info *pinfo)
 	 */
 	if (!lxcache)
 		return NULL;
+
+#else
+
+	/* pg 15- doesn't support HASH_ENTER_NULL on palloc-based allocators */
+	lxcache = (LXCache *) hash_search(lxcache_ht,
+									  (void *) &hk,
+									  HASH_ENTER,
+									  &found);
+
+#endif
 
 	if (!found)
 	{
@@ -1049,6 +1061,8 @@ update_local_persistent_fstats(profiler_info *pinfo,
 
 	init_func_hk(&hk, pinfo->func->fn_oid);
 
+#if PG_VERSION_NUM >= 160000
+
 	fs = (FuncStats *) hash_search(func_stats_ht,
 								   (void *) &hk,
 								   HASH_ENTER_NULL,
@@ -1068,6 +1082,15 @@ update_local_persistent_fstats(profiler_info *pinfo,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("could not create new FuncStats entry for profiler statistics")));
 	}
+
+#else
+
+	fs = (FuncStats *) hash_search(func_stats_ht,
+								   (void *) &hk,
+								   HASH_ENTER,
+								   &found);
+
+#endif
 
 	if (!found)
 		init_fstats(fs);
@@ -1268,6 +1291,8 @@ update_local_persistent_stmts_stats(profiler_info *pinfo)
 
 	plch_init_fidentity_hk(&hk, pinfo->func);
 
+#if PG_VERSION_NUM >= 160000
+
 	/* don't need too strong lock for reading local memory */
 	fss = (FuncStmtsStats *) hash_search(func_stmts_stats_ht,
 										 (void *) &hk,
@@ -1283,6 +1308,15 @@ update_local_persistent_stmts_stats(profiler_info *pinfo)
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("could not create new FuncStmtStats entry for profiler statistics")));
 	}
+
+#else
+
+	fss = (FuncStmtsStats *) hash_search(func_stmts_stats_ht,
+										 (void *) &hk,
+										 HASH_ENTER,
+										 &found);
+
+#endif
 
 	if (!found)
 	{
@@ -1822,8 +1856,8 @@ profiler_get_queryid(PLpgSQL_execstate *estate, PLpgSQL_stmt *stmt,
 
 		/*
 		 * Attention - the expression used in EXECUTE commands is executed 2x.
-		 * Unfortunatelly there is not any other way how to get queryid of
-		 * query maked by the expression. Usually this is not a problem, but
+		 * Unfortunately there is not any other way how to get queryid of
+		 * query made by the expression. Usually this is not a problem, but
 		 * when volatile function is executed, then some unwanted side effect
 		 * can be detected. In this case the computed queryid can be false,
 		 * and looks so can be better in this case don't compute queryid.

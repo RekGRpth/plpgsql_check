@@ -930,3 +930,55 @@ $$ language plpgsql;
 select * from plpgsql_check_function('sw_handler_exit');
 
 drop function sw_handler_exit();
+
+create or replace function repro05_dynsql_query()
+returns void as $$
+begin
+  execute 'select 1' || undefined_var;
+end;
+$$ language plpgsql;
+
+create or replace function repro05_dynsql_param()
+returns void as $$
+begin
+  execute 'select $1' using undefined_var;
+end;
+$$ language plpgsql;
+
+create or replace function repro05_raise_errcode()
+returns void as $$
+begin
+  raise exception 'x' using errcode = undefined_var;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('repro05_dynsql_query()', fatal_errors => false);
+select * from plpgsql_check_function('repro05_dynsql_param()', fatal_errors => false);
+select * from plpgsql_check_function('repro05_raise_errcode()', fatal_errors => false);
+
+drop function repro05_dynsql_query();
+drop function repro05_dynsql_param();
+drop function repro05_raise_errcode();
+
+-- expressions with FROM clause are not simple expressions, should not crash
+create table sw_from_tab(q text);
+
+create function sw_from_expr()
+returns void as $$
+declare
+  x text;
+  r record;
+begin
+  execute q from sw_from_tab;
+  x := q from sw_from_tab;
+  execute 'select ' || x;
+  for r in execute q from sw_from_tab
+  loop
+  end loop;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_from_expr', security_warnings => true);
+
+drop function sw_from_expr();
+drop table sw_from_tab;

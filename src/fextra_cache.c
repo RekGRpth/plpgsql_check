@@ -2,7 +2,7 @@
  *
  * fextra_cache
  *
- *			cache with function extra informations - mostly AST based
+ *			cache with function extra information - mostly AST based
  *
  * by Pavel Stehule 2013-2026
  *
@@ -280,9 +280,6 @@ void
 plch_release_fextra(plch_fextra *fextra)
 {
 	Assert(fextra->use_count > 0);
-
-	/* until now, referenced PLpgSQL_function should be still valid */
-	Assert(fextra->hk.fn_oid == fextra->func->fn_oid);
 
 	if (OidIsValid(fextra->fn_oid))
 	{
