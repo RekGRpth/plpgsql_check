@@ -36,6 +36,16 @@ $$ language plpgsql;
 
 select * from plpgsql_check_function('as_f2', extra_warnings => true);
 
+-- the same for the variables of an event trigger
+create function as_f3()
+returns event_trigger as $$
+begin
+  tg_tag := 'x';
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('as_f3', extra_warnings => true);
+
 --
 -- assignment to a constant
 --
@@ -265,6 +275,7 @@ drop function as_f16();
 drop function as_f17();
 drop function as_f1(int);
 drop function as_f2();
+drop function as_f3();
 drop function as_f4();
 drop function as_f5();
 drop function as_f6();
@@ -541,3 +552,28 @@ drop function repro_foreach();
 drop function repro_foreach_slice();
 drop function repro_foreach_const();
 drop table repro_foreach_tab;
+
+-- the check must not leave the target of the checked expression in the
+-- compiled function, else the runtime can modify the loop variable in
+-- place when it evaluates the array expression of FOREACH
+create function as_foreach_rw()
+returns text as $$
+declare x int[] := array[1, 2, 3];
+begin
+  begin
+    foreach x slice 2 in array array_append(x, 99)
+    loop
+      null;
+    end loop;
+  exception when others then
+    return x::text || ' ' || sqlerrm;
+  end;
+  return x::text;
+end;
+$$ language plpgsql;
+
+select as_foreach_rw();
+select * from plpgsql_check_function('as_foreach_rw()');
+select as_foreach_rw();
+
+drop function as_foreach_rw();

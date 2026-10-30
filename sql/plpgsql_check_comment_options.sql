@@ -283,9 +283,24 @@ $func$ language plpgsql;
 
 select * from co_check('co_dollar_literal');
 
+-- the closing delimiter is searched only after the opening delimiter
+create function co_dollar_overlap()
+returns text as $func$
+declare
+  x int;
+begin
+  -- @plpgsql_check_options: without_warnings
+  return $$$5 -- @plpgsql_check_options: nonsense$$ ||
+         $t$t$ -- @plpgsql_check_options: nonsense$t$;
+end;
+$func$ language plpgsql;
+
+select * from co_check('co_dollar_overlap');
+
 drop function co_dollar_parameters(int, int);
 drop function co_dollar_identifier();
 drop function co_dollar_literal();
+drop function co_dollar_overlap();
 
 -- end of source terminates a line comment just like a newline
 create function co_final_comment()
@@ -770,6 +785,49 @@ returns int as $$
 -- @plpgsql_check_options: extra_security_warnings_level = xxx
 begin
   return (select count(relname) from pg_class);
+end;
+$$ language plpgsql;
+
+select * from co_check('fx()');
+
+drop function fx();
+
+-- the value of an int option is required, "=" is optional
+create or replace function fx()
+returns int as $$
+-- @plpgsql_check_options: extra_security_warnings_level
+begin
+  return length('x');
+end;
+$$ language plpgsql;
+
+select * from co_check('fx()');
+
+create or replace function fx()
+returns int as $$
+-- @plpgsql_check_options: extra_security_warnings_level, other_warnings
+begin
+  return length('x');
+end;
+$$ language plpgsql;
+
+select * from co_check('fx()');
+
+create or replace function fx()
+returns int as $$
+-- @plpgsql_check_options: extra_security_warnings_level 2
+begin
+  return length('x');
+end;
+$$ language plpgsql;
+
+select * from co_check('fx()');
+
+create or replace function fx()
+returns int as $$
+-- @plpgsql_check_options: extra_security_warnings_level = 100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+begin
+  return length('x');
 end;
 $$ language plpgsql;
 

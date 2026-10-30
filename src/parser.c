@@ -12,6 +12,7 @@
 
 #include "plpgsql_check.h"
 
+#include <errno.h>
 #include <string.h>
 
 #include "catalog/namespace.h"
@@ -1387,46 +1388,46 @@ get_int_comment_option(TokenizerState *tstate, const char *name, plpgsql_check_i
 {
 	PragmaTokenType token,
 			   *_token;
+	char	   *str;
+	double		val;
+	char	   *endptr;
 
 	_token = get_token(tstate, &token);
+
+	/* there is not a default value for int comment option */
 	if (!_token)
-		return true;
+		elog(ERROR, "syntax error in comment option \"%s\" (fnoid: %u) (missing int value)",
+			 name, cinfo->fn_oid);
 
 	if (_token->value == '=')
 	{
-		char	   *str;
-		double		val;
-		char	   *endptr;
-
 		_token = get_token(tstate, &token);
 		if (!_token || _token->value != PRAGMA_TOKEN_NUMBER)
 			elog(ERROR, "syntax error in comment option \"%s\" (fnoid: %u) (expected int value after \"=\")",
 				 name, cinfo->fn_oid);
-
-		str = make_string(_token);
-		errno = 0;
-
-		val = strtod(str, &endptr);
-		if (errno != 0 || *endptr != '\0')
-			elog(ERROR, "internal error");
-
-		val = rint(val);
-
-		/* Range check */
-		if (unlikely(isnan(val) || !FLOAT8_FITS_IN_INT32(val)))
-			elog(ERROR, "integer out of range");
-
-		return (int) val;
 	}
 	else
-		elog(ERROR, "syntax error in comment option \"%s\" (fnoid: %u) (expected int value)",
-			 name, cinfo->fn_oid);
+	{
+		if (_token->value != PRAGMA_TOKEN_NUMBER)
+			elog(ERROR, "syntax error in comment option \"%s\" (fnoid: %u) (expected int value)",
+				 name, cinfo->fn_oid);
+	}
 
-	/* fix warning C4715 on msvc */
-	Assert(0);
-	return false;
+	str = make_string(_token);
+	errno = 0;
+
+	val = strtod(str, &endptr);
+	if (errno != 0 || *endptr != '\0')
+		elog(ERROR, "internal error (%m)");
+
+	val = rint(val);
+
+	/* Range check */
+	if (unlikely(isnan(val) || !FLOAT8_FITS_IN_INT32(val)))
+		elog(ERROR, "integer out of range");
+
+	return (int) val;
 }
-
 
 static char *
 get_name_comment_option(TokenizerState *tstate, const char *name, plpgsql_check_info *cinfo)
@@ -1919,40 +1920,47 @@ plpgsql_check_search_comment_options(plpgsql_check_info *cinfo)
 			}
 		}
 
+		/*
+		 * skip possibly $x$ ... $x$ string.
+		 *
+		 * Attention: plpgsql identifier can contain '$', so we need test if
+		 * we are not inside identifier.
+		 */
 		else if (*src == '$' &&
 				 (src == srcstart || !is_ident_cont((unsigned char) src[-1])))
 		{
-			char	   *start = src++;
+			char	   *ptr = src + 1;
 
-			if (is_ident_start((unsigned char) *src))
+			if (is_ident_start((unsigned char) *ptr))
 			{
+				/* skip identifiers */
 				do
 				{
-					src += 1;
+					ptr += 1;
 				}
-				while (*src != '$' && is_ident_cont((unsigned char) *src));
+				while (*ptr != '$' && is_ident_cont((unsigned char) *ptr));
 			}
 
-			/* found ending $ of starting tag */
-			if (*src == '$')
+			/* found ending $ of start tag */
+			if (*ptr++ == '$')
 			{
-				/* size of custom string separator (include dolars) */
-				size_t		cust_str_length = src - start + 1;
+				size_t		tag_len = ptr - src;
 
-				while (*src != '\0')
+				while (*ptr != '\0')
 				{
-					if (strncmp(src, start, cust_str_length) == 0)
-					{
-						/* found complete custom string separator */
-						src += cust_str_length;
+					if (strncmp(src, ptr, tag_len) == 0)
 						break;
-					}
 
-					src += 1;
+					ptr += 1;
 				}
+
+				if (*ptr)
+					src = ptr + tag_len;
+				else
+					break;
 			}
 			else
-				src = start + 1;
+				src += 1;
 		}
 		else
 			src += 1;
