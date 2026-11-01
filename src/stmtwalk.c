@@ -79,6 +79,16 @@ check_variable(PLpgSQL_checkstate *cstate, PLpgSQL_variable *var)
 				continue;
 
 			plpgsql_check_target(cstate, row->varnos[fnum], NULL, NULL);
+
+			/*
+			 * The target gets a value from a query (or a cursor), and this
+			 * value is not traced. The fields of the target have not traced
+			 * constant values after the assignment, and they are not known
+			 * to be sanitized.
+			 */
+			plpgsql_check_reset_strconstvar(cstate, row->varnos[fnum]);
+			cstate->safe_variables = bms_del_member(cstate->safe_variables,
+													row->varnos[fnum]);
 		}
 		plpgsql_check_record_variable_usage(cstate, row->dno, true);
 
@@ -595,6 +605,14 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					if (stmt_fori->step)
 						plpgsql_check_assignment(cstate, stmt_fori->step, NULL, NULL, dno);
 
+					/*
+					 * The values of the bounds and of the step are not the
+					 * values of the loop variable (the variable gets all the
+					 * values between the bounds), so they must not be traced
+					 * as its constant value.
+					 */
+					plpgsql_check_reset_strconstvar(cstate, dno);
+
 					/* this variable should not be updated */
 					cstate->protected_variables = bms_add_member(cstate->protected_variables, dno);
 					cstate->auto_variables = bms_add_member(cstate->auto_variables, dno);
@@ -683,6 +701,14 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 																  NULL, NULL,
 																  stmt_foreach_a->varno,
 																  use_element_type);
+
+					/*
+					 * The loop variable gets the elements or the slices of
+					 * the array, never the array itself, so the value of the
+					 * array expression must not be traced as its constant
+					 * value.
+					 */
+					plpgsql_check_reset_strconstvar(cstate, stmt_foreach_a->varno);
 
 					check_stmts(cstate, stmt_foreach_a->body, &closing_local, &exceptions_local);
 					*closing = possibly_closed(closing_local);
@@ -1159,6 +1185,11 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						PLpgSQL_diag_item *diag_item = (PLpgSQL_diag_item *) lfirst(lc);
 
 						plpgsql_check_target(cstate, diag_item->target, NULL, NULL);
+
+						/* the diagnostics item is not known at check time */
+						plpgsql_check_reset_strconstvar(cstate, diag_item->target);
+						cstate->safe_variables = bms_del_member(cstate->safe_variables,
+																diag_item->target);
 
 						/*
 						 * Using GET DIAGNOSTICS stack = PG_CONTEXT is like
@@ -1862,12 +1893,27 @@ exception_matches_conditions(int sqlerrstate, PLpgSQL_condition *cond)
 		 * assert-failure.  If you're foolish enough, you can match those
 		 * explicitly.
 		 */
+
+#if PG_VERSION_NUM >= 180000
+
+		if (_sqlerrstate == PLPGSQL_OTHERS)
+		{
+			if (sqlerrstate != ERRCODE_QUERY_CANCELED &&
+				sqlerrstate != ERRCODE_ASSERT_FAILURE)
+				return true;
+		}
+
+#else
+
 		if (_sqlerrstate == 0)
 		{
 			if (sqlerrstate != ERRCODE_QUERY_CANCELED &&
 				sqlerrstate != ERRCODE_ASSERT_FAILURE)
 				return true;
 		}
+
+#endif
+
 		/* Exact match? */
 		else if (sqlerrstate == _sqlerrstate)
 			return true;

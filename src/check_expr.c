@@ -1467,15 +1467,18 @@ plpgsql_check_get_const_string(PLpgSQL_checkstate *cstate, Node *node, int *loca
 }
 
 /*
- * Returns string for any not null constant. isnull is true,
- * when constant is null.
+ * Returns string representation of the value of the expression, when the
+ * expression is a not null constant or a variable with traced constant
+ * value. Otherwise returns NULL.
  *
+ * The plan checks are not done here. The expression should be checked
+ * before (and the plan checks would be raised twice).
  */
 char *
 plpgsql_check_expr_get_string(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr, int *location)
 {
 
-	Node	   *node = plpgsql_check_expr_get_node(cstate, expr, true);
+	Node	   *node = plpgsql_check_expr_get_node(cstate, expr, false);
 
 	if (!node)
 		return NULL;
@@ -1723,11 +1726,11 @@ plpgsql_check_returned_expr_with_parser_setup(PLpgSQL_checkstate *cstate,
 			}
 		}
 
-		if (tupdesc && tupdesc->natts > 0)
+		if (tupdesc)
 		{
 			/* enforce check for trigger function - result must be composit */
 			if (func->fn_retistuple && is_expression
-				&& !(type_is_rowtype(TupleDescAttr(tupdesc, 0)->atttypid) ||
+				&& !((tupdesc->natts > 0 && type_is_rowtype(TupleDescAttr(tupdesc, 0)->atttypid)) ||
 					 type_is_rowtype(first_level_typ) || tupdesc->natts > 1))
 			{
 				/* but we should to allow NULL */
@@ -1761,7 +1764,7 @@ plpgsql_check_returned_expr_with_parser_setup(PLpgSQL_checkstate *cstate,
 						free_conversion_map(tupmap);
 				}
 			}
-			else
+			else if (tupdesc->natts > 0)
 			{
 				/* returns scalar */
 				if (!IsPolymorphicType(func->fn_rettype))
@@ -1815,6 +1818,20 @@ plpgsql_check_returned_expr(PLpgSQL_checkstate *cstate,
 							bool is_expression)
 {
 	plpgsql_check_returned_expr_with_parser_setup(cstate, expr, is_expression, NULL, NULL);
+}
+
+/*
+ * Forget the traced constant value of the variable (when the variable
+ * gets a value that is not known at check time).
+ */
+void
+plpgsql_check_reset_strconstvar(PLpgSQL_checkstate *cstate, int dno)
+{
+	if (cstate->strconstvars && cstate->strconstvars[dno])
+	{
+		pfree(cstate->strconstvars[dno]);
+		cstate->strconstvars[dno] = NULL;
+	}
 }
 
 /*
@@ -2165,13 +2182,25 @@ plpgsql_check_expr_as_rvalue_with_parser_setup(PLpgSQL_checkstate *cstate,
 				get_type_category_preferred(var->datatype->typoid, &typcategory, &typispreferred);
 				if (typcategory == 'S')
 				{
-					Node	   *node = plpgsql_check_expr_get_node(cstate, expr, false);
-					int			location;
+					bool		is_safe = false;
 
-					if (plpgsql_check_is_sql_injection_vulnerable(cstate, expr, node, &location))
-						cstate->safe_variables = bms_del_member(cstate->safe_variables, targetdno);
-					else
+					/*
+					 * When the target gets an element of an array (FOREACH),
+					 * the check of the array expression says nothing about
+					 * the content of the element.
+					 */
+					if (!use_element_type)
+					{
+						Node	   *node = plpgsql_check_expr_get_node(cstate, expr, false);
+						int			location;
+
+						is_safe = !plpgsql_check_is_sql_injection_vulnerable(cstate, expr, node, &location);
+					}
+
+					if (is_safe)
 						cstate->safe_variables = bms_add_member(cstate->safe_variables, targetdno);
+					else
+						cstate->safe_variables = bms_del_member(cstate->safe_variables, targetdno);
 				}
 			}
 		}

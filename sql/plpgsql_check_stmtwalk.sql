@@ -1018,3 +1018,102 @@ select * from plpgsql_check_function('sw_nonfatal', fatal_errors => false);
 
 drop function sw_nonfatal(int);
 drop procedure sw_nf_proc(int);
+
+-- WHEN OTHERS catches the exception, the code after the block is reachable
+create function sw_others1(p int)
+returns int as $$
+begin
+  begin
+    raise exception 'error %', p;
+  exception when others then
+    raise notice 'caught';
+  end;
+  return 1;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_others1');
+
+-- the end of the function is reachable, the missing RETURN is reported
+create function sw_others2(p int)
+returns int as $$
+begin
+  begin
+    raise exception 'error %', p;
+  exception when others then
+    raise notice 'caught';
+  end;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_others2');
+
+drop function sw_others1(int);
+drop function sw_others2(int);
+
+-- returned value or query without columns
+create function sw_rq0()
+returns table(a int) as $$
+begin
+  return query select;
+end;
+$$ language plpgsql;
+
+-- should fail, the structure of query doesn't match
+select * from plpgsql_check_function('sw_rq0');
+
+create type sw_rr_type as (a int, b int);
+
+create function sw_rr0()
+returns sw_rr_type as $$
+begin
+  return row();
+end;
+$$ language plpgsql;
+
+-- should fail, the structure of returned record doesn't match
+select * from plpgsql_check_function('sw_rr0');
+
+create function sw_rr1()
+returns record as $$
+begin
+  return row();
+end;
+$$ language plpgsql;
+
+-- is ok
+select * from plpgsql_check_function('sw_rr1');
+
+create function sw_rr2()
+returns text as $$
+begin
+  return row();
+end;
+$$ language plpgsql;
+
+-- is ok
+select * from plpgsql_check_function('sw_rr2');
+
+drop function sw_rq0();
+drop function sw_rr0();
+drop function sw_rr1();
+drop function sw_rr2();
+drop type sw_rr_type;
+
+-- the plan checks should be raised only once
+create table sw_plan_tab(a int primary key);
+
+create function sw_plan_checks(p int)
+returns int as $$
+declare x int;
+begin
+  x := (select a from sw_plan_tab where a = p for update);
+  raise exception using errcode = (select 'P0001' from sw_plan_tab where a = p for update);
+  return x;
+end;
+$$ language plpgsql stable;
+
+select * from plpgsql_check_function('sw_plan_checks', fatal_errors => false);
+
+drop function sw_plan_checks(int);
+drop table sw_plan_tab;
