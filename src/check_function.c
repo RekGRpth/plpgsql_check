@@ -22,6 +22,7 @@
 #endif
 
 #include "nodes/makefuncs.h"
+#include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
@@ -146,7 +147,7 @@ reports_used_rowtypes_dependency(PLpgSQL_function *func, PLpgSQL_checkstate *cst
 			typrelid = get_typ_typrelid(rec->datatype->typoid);
 			relkind = get_rel_relkind(typrelid);
 
-			if (!bms_is_member(typrelid, cstate->rel_oids))
+			if (!list_member_oid(cstate->rel_oids, typrelid))
 			{
 				if (relkind == RELKIND_COMPOSITE_TYPE)
 				{
@@ -157,7 +158,7 @@ reports_used_rowtypes_dependency(PLpgSQL_function *func, PLpgSQL_checkstate *cst
 												 get_rel_name(typrelid),
 												 NULL);
 
-					cstate->rel_oids = bms_add_member(cstate->rel_oids, typrelid);
+					cstate->rel_oids = lappend_oid(cstate->rel_oids, typrelid);
 				}
 				else if (relkind == RELKIND_RELATION ||
 						 relkind == RELKIND_PARTITIONED_TABLE ||
@@ -172,7 +173,7 @@ reports_used_rowtypes_dependency(PLpgSQL_function *func, PLpgSQL_checkstate *cst
 												 get_rel_name(typrelid),
 												 NULL);
 
-					cstate->rel_oids = bms_add_member(cstate->rel_oids, typrelid);
+					cstate->rel_oids = lappend_oid(cstate->rel_oids, typrelid);
 				}
 			}
 		}
@@ -891,10 +892,20 @@ replace_polymorphic_type(plpgsql_check_info *cinfo,
 				break;
 
 			case ANYARRAYOID:
+				if (!OidIsValid(anyelement_array_oid))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("could not find array type for data type %s",
+									format_type_be(cinfo->anyelementoid)),
+							 errdetail("The data type is specified by anyelementtype option.")));
 				typ = anyelement_array_oid;
 				break;
 
 			case ANYRANGEOID:
+				if (!type_is_range(cinfo->anyrangeoid))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("type specified by anyrangetype option is not range")));
 				typ = is_variadic ? get_array_type(cinfo->anyrangeoid) : cinfo->anyrangeoid;
 				break;
 
@@ -917,10 +928,20 @@ replace_polymorphic_type(plpgsql_check_info *cinfo,
 				break;
 
 			case ANYCOMPATIBLEARRAYOID:
+				if (!OidIsValid(anycompatible_array_oid))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("could not find array type for data type %s",
+									format_type_be(cinfo->anycompatibleoid)),
+							 errdetail("The data type is specified by anycompatibletype option.")));
 				typ = anycompatible_array_oid;
 				break;
 
 			case ANYCOMPATIBLERANGEOID:
+				if (!type_is_range(cinfo->anycompatiblerangeoid))
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("type specified by anycompatiblerangetype option is not range")));
 				typ = is_variadic ? get_array_type(cinfo->anycompatiblerangeoid) : cinfo->anycompatiblerangeoid;
 				break;
 
@@ -1325,8 +1346,9 @@ setup_cstate(PLpgSQL_checkstate *cstate,
 
 	cstate->is_active_mode = is_active_mode;
 
-	cstate->func_oids = NULL;
-	cstate->rel_oids = NULL;
+	cstate->func_oids = NIL;
+	cstate->rel_oids = NIL;
+	cstate->op_oids = NIL;
 
 	cstate->check_cxt = AllocSetContextCreate(CurrentMemoryContext,
 											  "plpgsql_check temporary cxt",

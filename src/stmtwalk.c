@@ -20,6 +20,7 @@
 #include "parser/parse_node.h"
 #include "parser/parser.h"
 #include "common/keywords.h"
+#include "utils/lsyscache.h"
 
 static void check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, List **exceptions);
 static PLpgSQL_stmt_stack_item *push_stmt_to_stmt_stack(PLpgSQL_checkstate *cstate);
@@ -193,7 +194,13 @@ check_variable_name(PLpgSQL_checkstate *cstate,
 			}
 		}
 
-		if (found_shadowed_variable(refname, outer_stmt_stack, cstate))
+		/*
+		 * The FOUND variable is declared in the namespace of the function
+		 * (like parameters), so any variable of the same name shadows it.
+		 */
+		if (found_shadowed_variable(refname, outer_stmt_stack, cstate) ||
+			(dno != cstate->estate->found_varno &&
+			 strcmp(refname, ((PLpgSQL_var *) cstate->estate->func->datums[cstate->estate->found_varno])->refname) == 0))
 		{
 			StringInfoData str;
 
@@ -227,6 +234,7 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 	PLpgSQL_stmt_stack_item *outer_stmt_stack;
 	plpgsql_check_pragma_vector pragma_vector;
 	const char *save_err_text;
+	PLpgSQL_stmt *save_err_stmt;
 
 	if (stmt == NULL)
 		return;
@@ -234,6 +242,14 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 	if (cstate->stop_check)
 		return;
 
+	/*
+	 * The err_stmt is restored when the check of the statement finished, so
+	 * the diagnostics raised after the check of nested statements (like the
+	 * check of ELSIF conditions) are related to the right statement (like
+	 * at runtime). When the error is propagated, the err_stmt is not
+	 * restored, so the error is related to the statement that raised it.
+	 */
+	save_err_stmt = cstate->estate->err_stmt;
 	cstate->estate->err_stmt = stmt;
 	cstate->was_pragma = false;
 
@@ -291,7 +307,13 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						check_variable_name(cstate, outer_stmt_stack, d->dno);
 					}
 
-					check_variable_name(cstate, outer_stmt_stack, cstate->estate->found_varno);
+					/*
+					 * The FOUND variable is declared only once, in the
+					 * namespace of the function, so check it only for the
+					 * outermost block.
+					 */
+					if (!outer_stmt_stack)
+						check_variable_name(cstate, outer_stmt_stack, cstate->estate->found_varno);
 
 					check_stmts(cstate, stmt_block->body, closing, exceptions);
 
@@ -562,8 +584,23 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 												 -1);
 					}
 					else
-						/* is not ensured all path evaluation */
-						*closing = possibly_closed(closing_all_paths);
+					{
+						/*
+						 * When no WHEN branch matches, then the CASE_NOT_FOUND
+						 * exception is raised. So when all branches are
+						 * closed, the statement is closed too. Else it is not
+						 * ensured all path evaluation.
+						 */
+						if (closing_all_paths == PLPGSQL_CHECK_CLOSED ||
+							closing_all_paths == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
+							*closing = merge_closing(closing_all_paths,
+													 PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS,
+													 exceptions,
+													 list_make1_int(ERRCODE_CASE_NOT_FOUND),
+													 -1);
+						else
+							*closing = possibly_closed(closing_all_paths);
+					}
 				}
 				break;
 
@@ -790,6 +827,7 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 						switch (retvar->dtype)
 						{
+							case PLPGSQL_DTYPE_PROMISE:
 							case PLPGSQL_DTYPE_VAR:
 								{
 									PLpgSQL_var *var = (PLpgSQL_var *) retvar;
@@ -907,9 +945,27 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 												(errcode(ERRCODE_DATATYPE_MISMATCH),
 												 errmsg("wrong result type supplied in RETURN NEXT")));
 
-									plpgsql_check_assign_to_target_type(cstate,
-																		cstate->estate->func->fn_rettype, -1,
-																		var->datatype->typoid, false, var->dno);
+									/*
+									 * The value is casted to the type of the
+									 * (only) column of result. Don't check it,
+									 * when result tuple desc is fake (the
+									 * function returns setof record).
+									 */
+									if (!cstate->fake_rtd)
+									{
+										Oid			target_typoid = cstate->estate->func->fn_rettype;
+										int32		target_typmod = -1;
+
+										if (natts == 1 && type_is_rowtype(target_typoid))
+										{
+											target_typoid = TupleDescAttr(tupdesc, 0)->atttypid;
+											target_typmod = TupleDescAttr(tupdesc, 0)->atttypmod;
+										}
+
+										plpgsql_check_assign_to_target_type(cstate,
+																			target_typoid, target_typmod,
+																			var->datatype->typoid, false, var->dno);
+									}
 								}
 								break;
 
@@ -925,7 +981,11 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 												 errdetail("The tuple structure of a not-yet-assigned"
 														   " record is indeterminate.")));
 
-									if (tupdesc)
+									/*
+									 * don't do next check, when result tuple
+									 * desc is fake
+									 */
+									if (tupdesc && !cstate->fake_rtd)
 									{
 										TupleConversionMap *tupmap;
 
@@ -1361,6 +1421,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 	}
 	PG_END_TRY();
 
+	cstate->estate->err_stmt = save_err_stmt;
+
 	if (!cstate->was_pragma)
 		cstate->pragma_vector = pragma_vector;
 	else
@@ -1435,6 +1497,11 @@ check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, List **except
 			/* raise dead_code_alert only for visible statements */
 			if (dead_code_alert && stmt->lineno > 0)
 			{
+				PLpgSQL_stmt *save_err_stmt = cstate->estate->err_stmt;
+
+				/* the warning is related to the unreachable statement */
+				cstate->estate->err_stmt = stmt;
+
 				plpgsql_check_put_error(cstate,
 										0, stmt->lineno,
 										"unreachable code",
@@ -1442,6 +1509,9 @@ check_stmts(PLpgSQL_checkstate *cstate, List *stmts, int *closing, List **except
 										NULL,
 										PLPGSQL_CHECK_WARNING_EXTRA,
 										0, NULL, NULL);
+
+				cstate->estate->err_stmt = save_err_stmt;
+
 				/* don't raise this warning every line */
 				dead_code_alert = false;
 			}
@@ -1575,10 +1645,6 @@ push_stmt_to_stmt_stack(PLpgSQL_checkstate *cstate)
 	{
 		case PLPGSQL_STMT_BLOCK:
 			stmt_stack_item->label = ((PLpgSQL_stmt_block *) stmt)->label;
-			break;
-
-		case PLPGSQL_STMT_EXIT:
-			stmt_stack_item->label = ((PLpgSQL_stmt_exit *) stmt)->label;
 			break;
 
 		case PLPGSQL_STMT_LOOP:

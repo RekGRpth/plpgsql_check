@@ -125,6 +125,7 @@ typedef struct ProfilerSharedState
 	LWLock	   *func_stmts_stats_lock;
 	int			stmt_stats_count;
 	int			used_stmt_stats_count;
+	int			starttime_max_stat_size;	/* used only in warning message */
 } ProfilerSharedState;
 
 /*
@@ -272,6 +273,7 @@ bool		plch_report_dynquery_queryid = false;
 
 static int	used_stmt_stats_count = 0;
 static int	estimated_stmt_stats_count = 0;
+static int	starttime_max_stat_size = 0;
 
 /*
  * plpgsql_profiler_reset_all destroys lxcache_mcxt. It emits
@@ -306,6 +308,7 @@ plpgsql_check_shmem_size(void)
 
 	num_bytes = MAXALIGN(sizeof(ProfilerSharedState));
 
+	starttime_max_stat_size = plch_max_stat_size;
 	estimated_stmt_stats_count = (((Size) plch_max_stat_size) * 1024) / sizeof(StmtStats);
 
 	num_bytes = add_size(num_bytes, mul_size(estimated_stmt_stats_count, sizeof(StmtStats)));
@@ -368,6 +371,7 @@ plpgsql_check_profiler_shmem_startup(void)
 		profiler_ss->func_stmts_stats_lock = &(GetNamedLWLockTranche("plpgsql_check profiler func stmts stats"))->lock;
 		profiler_ss->stmt_stats_count = estimated_stmt_stats_count;
 		profiler_ss->used_stmt_stats_count = 0;
+		profiler_ss->starttime_max_stat_size = starttime_max_stat_size;
 	}
 
 	SharedStmtStatsArray = ShmemInitStruct("plpgsql_check profiler shared statements stats",
@@ -1005,9 +1009,8 @@ update_fstats(FuncStats *fs, uint64 elapsed, bool aborted, uint64 raised_errors)
 {
 	fs->total_time += elapsed;
 
-	if (fs->min_time > 0)
-		fs->min_time = fs->min_time < elapsed ? fs->min_time : elapsed;
-	else
+	/* min_time is not valid before the first execution (it can be zero) */
+	if (fs->exec_count == 0 || elapsed < fs->min_time)
 		fs->min_time = elapsed;
 
 	fs->max_time = fs->max_time > elapsed ? fs->max_time : elapsed;
@@ -1029,6 +1032,16 @@ merge_fstats(FuncStats *a, FuncStats *b)
 	float8		ab_total_time_mean;
 	float8		ab_total_time_m2;
 
+	/* nothing to merge, and min_time of b is not valid */
+	if (b->exec_count == 0)
+		return;
+
+	/* min_time of a is not valid before the first execution */
+	if (a->exec_count == 0 || b->min_time < a->min_time)
+		a->min_time = b->min_time;
+
+	a->max_time = a->max_time > b->max_time ? a->max_time : b->max_time;
+
 	WelfordVarianceMerge(&ab_exec_count, &ab_total_time_mean, &ab_total_time_m2,
 						 a->exec_count, a->total_time_mean, a->total_time_m2,
 						 b->exec_count, b->total_time_mean, b->total_time_m2);
@@ -1040,13 +1053,6 @@ merge_fstats(FuncStats *a, FuncStats *b)
 	a->total_time += b->total_time;
 	a->total_time_mean = ab_total_time_mean;
 	a->total_time_m2 = ab_total_time_m2;
-
-	if (a->min_time > 0)
-		a->min_time = a->min_time < b->min_time ? a->min_time : b->min_time;
-	else
-		a->min_time = b->min_time;
-
-	a->max_time = a->max_time > b->max_time ? a->max_time : b->max_time;
 }
 
 static void
@@ -1520,7 +1526,7 @@ merge_lxcached_shared_stmts_stats(LXCache *lxcache,
 						(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 						 errmsg("cannot use shared memory for profiler statistics"),
 						 errdetail("the used memory exceeds \"plpgsql_check.max_stats_size\" (%dkB)",
-								   plch_max_stat_size),
+								   profiler_ss->starttime_max_stat_size),
 						 errhint("Statistics can be cleaned by calling function \"plpgsql_profiler_reset_all()\".")));
 
 				*raise_warning_sstats = false;
@@ -2522,6 +2528,7 @@ show_shared_profile(PLpgSQL_function *func,
 {
 	FuncStmtsStats *fss;
 	bool		found;
+	StmtStats  *loc_sstats = NULL;
 
 	LWLockAcquire(profiler_ss->func_stmts_stats_lock, LW_SHARED);
 
@@ -2530,29 +2537,24 @@ show_shared_profile(PLpgSQL_function *func,
 										 HASH_FIND,
 										 &found);
 
+	/*
+	 * The report has one row per line of the source code, so building it can
+	 * take a long time. Don't hold the spinlock (and the LWLock) all this
+	 * time - the backends updating the statistics of the function would spin
+	 * on the spinlock (and eventually fail with "stuck spinlock" PANIC).
+	 * Build the report from a local copy of the statistics instead.
+	 */
 	if (found)
-	{
-		SpinLockAcquire(&fss->mutex);
-		context->sstats = &SharedStmtStatsArray[fss->shared_sstats_offset];
-	}
-
-	PG_TRY();
-	{
-		show_profile(func, context);
-	}
-	PG_CATCH();
-	{
-		if (found)
-			SpinLockRelease(&fss->mutex);
-
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
-	if (found)
-		SpinLockRelease(&fss->mutex);
+		loc_sstats = statement_stats_local_copy(fss);
 
 	LWLockRelease(profiler_ss->func_stmts_stats_lock);
+
+	context->sstats = loc_sstats;
+
+	show_profile(func, context);
+
+	if (loc_sstats)
+		pfree(loc_sstats);
 }
 
 /*

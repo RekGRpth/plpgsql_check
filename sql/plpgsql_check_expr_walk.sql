@@ -562,6 +562,105 @@ $$ language plpgsql;
 
 select type, schema, name, params from plpgsql_show_dependency_tb('ew_f29');
 
+-- an operator is listed once, even when it is used repeatedly
+create function ew_f29c(n int)
+returns int as $$
+begin
+  return @# (@# n);
+end;
+$$ language plpgsql;
+
+select type, schema, name, params from plpgsql_show_dependency_tb('ew_f29c');
+
+-- aggregates and window functions are functions, and the operators used by
+-- ANY, IS DISTINCT FROM and NULLIF are operators like the others
+create function ew_eq(int, int)
+returns bool as $$ select $1 = $2 $$ language sql immutable;
+create function ew_eq(int, text)
+returns bool as $$ select $1::text = $2 $$ language sql immutable;
+create function ew_eq(text, int)
+returns bool as $$ select $1 = $2::text $$ language sql immutable;
+create operator ### (function = ew_eq, leftarg = int, rightarg = int);
+create operator = (function = ew_eq, leftarg = int, rightarg = text);
+create operator = (function = ew_eq, leftarg = text, rightarg = int);
+create aggregate ew_sum(int) (sfunc = int4pl, stype = int);
+create aggregate ew_max(int) (sfunc = int4larger, stype = int);
+
+create function ew_f29d(n int, t text)
+returns int as $$
+begin
+  if n ### any(array[1, 2]) or n is distinct from t or nullif(t, n) is null then
+    return (select ew_sum(i) from generate_series(1, n) g(i));
+  end if;
+  return (select ew_max(i) over () from generate_series(1, n) g(i) limit 1);
+end;
+$$ language plpgsql;
+
+select type, schema, name, params
+  from plpgsql_show_dependency_tb('ew_f29d')
+ order by type, params, name;
+
+drop function ew_f29d(int, text);
+drop aggregate ew_max(int);
+drop aggregate ew_sum(int);
+drop operator = (text, int);
+drop operator = (int, text);
+drop operator ### (int, int);
+drop function ew_eq(text, int);
+drop function ew_eq(int, text);
+drop function ew_eq(int, int);
+
+-- the operators of a row comparison are operators of a btree operator family
+create function ew_lt(int, int)
+returns bool as $$ select $1 < $2 $$ language sql immutable;
+create function ew_cmp(int, int)
+returns int as $$ select btint4cmp($1, $2) $$ language sql immutable;
+create operator <<< (function = ew_lt, leftarg = int, rightarg = int);
+create operator family ew_fam using btree;
+alter operator family ew_fam using btree
+  add operator 1 <<< (int, int), function 1 ew_cmp(int, int);
+
+create function ew_f29e(a int, b int)
+returns bool as $$
+begin
+  return (a, b) <<< (1, 2);
+end;
+$$ language plpgsql;
+
+select type, schema, name, params from plpgsql_show_dependency_tb('ew_f29e');
+
+drop function ew_f29e(int, int);
+drop operator family ew_fam using btree;
+drop operator <<< (int, int);
+drop function ew_cmp(int, int);
+drop function ew_lt(int, int);
+
+-- a view used by a query is a dependency of the routine, like the relations
+-- used by the view
+create view ew_view1 as select a from ew_tab1;
+
+create function ew_f29a()
+returns int as $$
+begin
+  return (select a from ew_view1 limit 1);
+end;
+$$ language plpgsql;
+
+select type, schema, name, params from plpgsql_show_dependency_tb('ew_f29a');
+
+-- a routine that reads a view cannot be IMMUTABLE, even when the view
+-- doesn't use any relation
+create view ew_view2 as select 1 as a;
+
+create function ew_f29b()
+returns int as $$
+begin
+  return (select a from ew_view2);
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('ew_f29b', performance_warnings => true);
+
 -- Explicit VARIADIC arrays supply their elements, not one array argument.
 create function ew_f30(p text)
 returns void as $$
@@ -755,6 +854,11 @@ drop function ew_f25(bigint);
 drop function ew_f26(bigint);
 drop function ew_f27(bigint);
 drop function ew_f29(int);
+drop function ew_f29a();
+drop function ew_f29b();
+drop function ew_f29c(int);
+drop view ew_view1;
+drop view ew_view2;
 drop function ew_id(text);
 drop operator @# (none, int);
 drop function ew_neg(int);

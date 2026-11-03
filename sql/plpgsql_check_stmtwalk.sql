@@ -102,8 +102,9 @@ select * from plpgsql_check_function('sw_f4c');
 -- CASE statement
 --
 
--- when the CASE has no ELSE part, the execution path is closed only
--- possibly, although every WHEN part returns
+-- when the CASE has no ELSE part, and no WHEN part matches, then the
+-- CASE_NOT_FOUND exception is raised, so the execution path is closed
+-- when every WHEN part returns
 create function sw_f5(n int)
 returns int as $$
 begin
@@ -115,6 +116,22 @@ end;
 $$ language plpgsql;
 
 select * from plpgsql_check_function('sw_f5');
+
+-- the CASE_NOT_FOUND exception can be handled
+create function sw_f5b(n int)
+returns int as $$
+begin
+  begin
+    case n
+      when 1 then return 10;
+    end case;
+  exception when case_not_found then
+    return -1;
+  end;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_f5b');
 
 -- with the ELSE part the path is closed
 create function sw_f6(n int)
@@ -489,6 +506,7 @@ drop function sw_f4(int);
 drop function sw_f4b(int);
 drop function sw_f4c(int);
 drop function sw_f5(int);
+drop function sw_f5b(int);
 drop function sw_f6(int);
 drop function sw_f7(int);
 drop function sw_f8(int);
@@ -1117,3 +1135,149 @@ select * from plpgsql_check_function('sw_plan_checks', fatal_errors => false);
 
 drop function sw_plan_checks(int);
 drop table sw_plan_tab;
+
+
+-- the structure of result of function returning setof record is not
+-- known, and the scalar value is casted to the column of composite type
+-- with one column
+create type sw_onecol as (a int);
+
+create function sw_rn_record()
+returns setof record as $$
+declare r record;
+begin
+  for r in select 1 as a, 2 as b
+  loop
+    return next r;
+  end loop;
+  return;
+end;
+$$ language plpgsql;
+
+create function sw_rn_record_scalar()
+returns setof record as $$
+declare v int := 1;
+begin
+  return next v;
+  return;
+end;
+$$ language plpgsql;
+
+create function sw_rn_onecol()
+returns setof sw_onecol as $$
+declare
+  v int := 1;
+  d date := current_date;
+begin
+  return next v;
+  -- should be reported
+  return next d;
+  return;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_rn_record()');
+select * from plpgsql_check_function('sw_rn_record_scalar()');
+select * from plpgsql_check_function('sw_rn_onecol()');
+
+drop function sw_rn_record();
+drop function sw_rn_record_scalar();
+drop function sw_rn_onecol();
+drop type sw_onecol;
+
+--
+-- RETURN of trigger variable (PROMISE datum) should be checked
+-- like RETURN of any other scalar variable
+--
+create table sw_trg_t(a int);
+
+create function sw_trg_ret_promise()
+returns trigger as $$
+begin
+  return tg_op;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_trg_ret_promise()', 'sw_trg_t');
+
+drop function sw_trg_ret_promise();
+drop table sw_trg_t;
+
+--
+-- the FOUND variable is declared only once, in the namespace of the
+-- function
+--
+
+-- the shadowing of the parameter is reported only once
+create function sw_found_param(found int)
+returns int as $$
+begin
+  begin
+    return 1;
+  end;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_found_param(int)');
+
+-- the local variable shadows the FOUND variable
+create function sw_found_var()
+returns int as $$
+declare found boolean := false;
+begin
+  begin
+    perform 1;
+  end;
+  if not found then
+    return 0;
+  end if;
+  return 1;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_found_var()');
+
+drop function sw_found_param(int);
+drop function sw_found_var();
+
+-- the label used by EXIT and CONTINUE is not checked again
+create function sw_label_keyword()
+returns void as $$
+begin
+  <<table>>
+  loop
+    exit table when random() > 0.5;
+    continue table;
+  end loop;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_label_keyword()');
+
+drop function sw_label_keyword();
+
+-- the diagnostics raised after the check of nested statements are
+-- related to the right statement
+create function sw_err_stmt(a int)
+returns int as $$
+begin
+  return 1;
+  if a > 0 then
+    a := a + 1;
+    a := a + 2;
+  end if;
+  case
+    when a > 0 then
+      a := a + 1;
+    when a + nonexisting_col > 0 then
+      a := 0;
+    else
+      null;
+  end case;
+  return a;
+end;
+$$ language plpgsql;
+
+select * from plpgsql_check_function('sw_err_stmt(int)', fatal_errors => false);
+
+drop function sw_err_stmt(int);
