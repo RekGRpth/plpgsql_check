@@ -84,8 +84,8 @@ check_variable(PLpgSQL_checkstate *cstate, PLpgSQL_variable *var)
 			/*
 			 * The target gets a value from a query (or a cursor), and this
 			 * value is not traced. The fields of the target have not traced
-			 * constant values after the assignment, and they are not known
-			 * to be sanitized.
+			 * constant values after the assignment, and they are not known to
+			 * be sanitized.
 			 */
 			plpgsql_check_reset_strconstvar(cstate, row->varnos[fnum]);
 			cstate->safe_variables = bms_del_member(cstate->safe_variables,
@@ -245,9 +245,9 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 	/*
 	 * The err_stmt is restored when the check of the statement finished, so
 	 * the diagnostics raised after the check of nested statements (like the
-	 * check of ELSIF conditions) are related to the right statement (like
-	 * at runtime). When the error is propagated, the err_stmt is not
-	 * restored, so the error is related to the statement that raised it.
+	 * check of ELSIF conditions) are related to the right statement (like at
+	 * runtime). When the error is propagated, the err_stmt is not restored,
+	 * so the error is related to the statement that raised it.
 	 */
 	save_err_stmt = cstate->estate->err_stmt;
 	cstate->estate->err_stmt = stmt;
@@ -535,7 +535,7 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						{
 							/* record all variables used by the query */
 							cstate->used_variables = bms_add_members(cstate->used_variables,
-																 stmt_case->t_expr->paramnos);
+																	 stmt_case->t_expr->paramnos);
 
 							tupdesc = plpgsql_check_expr_get_desc(cstate,
 																  stmt_case->t_expr,
@@ -547,11 +547,11 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 							if (tupdesc)
 							{
 								/*
-								 * When expected datatype is different from real,
-								 * change it. Note that what we're modifying here
-								 * is an execution copy of the datum, so this
-								 * doesn't affect the originally stored function
-								 * parse tree.
+								 * When expected datatype is different from
+								 * real, change it. Note that what we're
+								 * modifying here is an execution copy of the
+								 * datum, so this doesn't affect the
+								 * originally stored function parse tree.
 								 */
 								if (t_var->datatype->typoid != result_oid)
 
@@ -566,11 +566,12 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 						else
 						{
 							/*
-							 * When the check failed (fatal_errors is false), the
-							 * error was reported already. The type of hidden
-							 * variable is unknown, and then we cannot to check
-							 * WHEN expressions (they compare hidden variable with
-							 * values), but we can check nested statements.
+							 * When the check failed (fatal_errors is false),
+							 * the error was reported already. The type of
+							 * hidden variable is unknown, and then we cannot
+							 * to check WHEN expressions (they compare hidden
+							 * variable with values), but we can check nested
+							 * statements.
 							 */
 							check_when_exprs = false;
 
@@ -607,10 +608,10 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					else
 					{
 						/*
-						 * When no WHEN branch matches, then the CASE_NOT_FOUND
-						 * exception is raised. So when all branches are
-						 * closed, the statement is closed too. Else it is not
-						 * ensured all path evaluation.
+						 * When no WHEN branch matches, then the
+						 * CASE_NOT_FOUND exception is raised. So when all
+						 * branches are closed, the statement is closed too.
+						 * Else it is not ensured all path evaluation.
 						 */
 						if (closing_all_paths == PLPGSQL_CHECK_CLOSED ||
 							closing_all_paths == PLPGSQL_CHECK_CLOSED_BY_EXCEPTIONS)
@@ -812,24 +813,24 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 			case PLPGSQL_STMT_PERFORM:
 				{
-					bool returns_data;
+					bool		returns_data;
 
 					plpgsql_check_expr_as_sqlstmt(cstate,
 												  ((PLpgSQL_stmt_perform *) stmt)->expr,
 												  &returns_data);
 					(void) returns_data;
 
-				/*
-				 * Note: if you want to raise warning when used expressions
-				 * returns some value (other than VOID type), change previous
-				 * command plpgsql_check_expr to following
-				 * check_expr_with_expected_scalar_type. This should be not
-				 * enabled by default, because PERFORM can be used with reason
-				 * to ignore result.
-				 *
-				 * check_expr_with_expected_scalar_type(cstate,
-				 * ((PLpgSQL_stmt_perform *) stmt)->expr, VOIDOID, true);
-				 */
+					/*
+					 * Note: if you want to raise warning when used
+					 * expressions returns some value (other than VOID type),
+					 * change previous command plpgsql_check_expr to following
+					 * check_expr_with_expected_scalar_type. This should be
+					 * not enabled by default, because PERFORM can be used
+					 * with reason to ignore result.
+					 *
+					 * check_expr_with_expected_scalar_type(cstate,
+					 * ((PLpgSQL_stmt_perform *) stmt)->expr, VOIDOID, true);
+					 */
 				}
 				break;
 
@@ -968,8 +969,8 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 									/*
 									 * The value is casted to the type of the
-									 * (only) column of result. Don't check it,
-									 * when result tuple desc is fake (the
+									 * (only) column of result. Don't check
+									 * it, when result tuple desc is fake (the
 									 * function returns setof record).
 									 */
 									if (!cstate->fake_rtd)
@@ -1223,9 +1224,6 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 					plpgsql_check_expr_as_sqlstmt_data(cstate, var->cursor_explicit_expr);
 					plpgsql_check_expr_as_sqlstmt_data(cstate, stmt_open->query);
 
-					if (stmt_open->query != NULL)
-						var->cursor_explicit_expr = stmt_open->query;
-
 					plpgsql_check_expr_as_sqlstmt_data(cstate, stmt_open->argquery);
 
 					if (stmt_open->dynquery)
@@ -1236,17 +1234,18 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 										  false,
 										  NULL,
 										  stmt_open->params);
+					}
 
-						if (!cstate->dyn_stmt_open)
+					if (stmt_open->query || stmt_open->dynquery)
+					{
+						if (!cstate->cursorvars)
 						{
-							MemoryContext oldcxt = MemoryContextSwitchTo(cstate->check_cxt);
-
-							cstate->dyn_stmt_open = palloc0(cstate->estate->ndatums * sizeof(PLpgSQL_stmt_open *));
-
-							MemoryContextSwitchTo(oldcxt);
+							cstate->cursorvars =
+								MemoryContextAllocZero(cstate->check_cxt,
+													   cstate->estate->ndatums * sizeof(plch_cursorvar));
 						}
 
-						cstate->dyn_stmt_open[stmt_open->curvar] = stmt_open;
+						cstate->cursorvars[stmt_open->curvar].stmt_open = stmt_open;
 					}
 
 					plpgsql_check_target(cstate, stmt_open->curvar, NULL, NULL);
@@ -1304,25 +1303,29 @@ plpgsql_check_stmt(PLpgSQL_checkstate *cstate, PLpgSQL_stmt *stmt, int *closing,
 
 					if (!stmt_fetch->is_move && var)
 					{
+						PLpgSQL_stmt_open *stmt_open = NULL;
+
+						if (cstate->cursorvars)
+							stmt_open = cstate->cursorvars[stmt_fetch->curvar].stmt_open;
+
 						if (var->cursor_explicit_expr != NULL)
 						{
 							plpgsql_check_assignment_to_variable(cstate, var->cursor_explicit_expr,
 																 stmt_fetch->target, -1);
 						}
-						else if (cstate->dyn_stmt_open)
+						else if (stmt_open && stmt_open->query)
 						{
-							/* maybe, the cursor is dynamic */
-							PLpgSQL_stmt_open *stmt_open = cstate->dyn_stmt_open[var->dno];
-
-							if (stmt_open)
-							{
-								check_dynamic_sql(cstate,
-												  stmt,
-												  stmt_open->dynquery,
-												  true,
-												  stmt_fetch->target,
-												  stmt_open->params);
-							}
+							plpgsql_check_assignment_to_variable(cstate, stmt_open->query,
+																 stmt_fetch->target, -1);
+						}
+						else if (stmt_open && stmt_open->dynquery)
+						{
+							check_dynamic_sql(cstate,
+											  stmt,
+											  stmt_open->dynquery,
+											  true,
+											  stmt_fetch->target,
+											  stmt_open->params);
 						}
 					}
 
@@ -2185,7 +2188,7 @@ check_dynamic_sql(PLpgSQL_checkstate *cstate,
 	foreach(l, params)
 	{
 		PLpgSQL_expr *param = (PLpgSQL_expr *) lfirst(l);
-	
+
 		plpgsql_check_expr(cstate, param);
 		if (no_valid_plan(cstate, param))
 			params_are_valid = false;
@@ -2195,9 +2198,9 @@ check_dynamic_sql(PLpgSQL_checkstate *cstate,
 
 	/*
 	 * When fatal_errors is off, then an exception can be handled inside
-	 * plpgsql_check_expr, and then we have to check if expr has a valid
-	 * plan or not. We can continue in an analyze only when all plans of
-	 * all related expression are valid.
+	 * plpgsql_check_expr, and then we have to check if expr has a valid plan
+	 * or not. We can continue in an analyze only when all plans of all
+	 * related expression are valid.
 	 */
 	if (no_valid_plan(cstate, query) || !params_are_valid)
 	{

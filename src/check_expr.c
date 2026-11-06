@@ -243,7 +243,8 @@ typedef struct detect_unqualified_identifiers_walker_context
 	PLpgSQL_checkstate *cstate;
 	PLpgSQL_expr *expr;
 	List	   *ctenames;		/* names of CTEs visible in the current scope */
-	List	   *targets;		/* target relations (RangeVar) of DML statements */
+	List	   *targets;		/* target relations (RangeVar) of DML
+								 * statements */
 } detect_unqualified_identifiers_walker_context;
 
 /*
@@ -427,14 +428,14 @@ detect_unqualified_identifiers_walker(Node *node, void *context)
 	else if (IsA(node, LockingClause))
 	{
 		/*
-		 * FOR UPDATE OF clause references relations by unqualified names
-		 * (or aliases) from FROM clause.
+		 * FOR UPDATE OF clause references relations by unqualified names (or
+		 * aliases) from FROM clause.
 		 */
 		return false;
 	}
 	else if (IsA(node, FuncCall))
 	{
-		if (list_length( ((FuncCall *) node)->funcname) == 1)
+		if (list_length(((FuncCall *) node)->funcname) == 1)
 		{
 			if (esw_level >= 2)
 				plpgsql_check_put_error(cstate,
@@ -447,7 +448,7 @@ detect_unqualified_identifiers_walker(Node *node, void *context)
 	}
 	else if (IsA(node, TypeName))
 	{
-		TypeName *typname = (TypeName *) node;
+		TypeName   *typname = (TypeName *) node;
 
 		if (!OidIsValid(typname->typeOid) && list_length(typname->names) == 1)
 		{
@@ -480,7 +481,7 @@ detect_unqualified_identifiers_walker(Node *node, void *context)
 	}
 	else if (IsA(node, RangeVar))
 	{
-		RangeVar *rv = (RangeVar *) node;
+		RangeVar   *rv = (RangeVar *) node;
 
 		/*
 		 * CTE or transition table cannot be qualified. But CTE doesn't hide
@@ -502,7 +503,7 @@ detect_unqualified_identifiers_walker(Node *node, void *context)
 	}
 	else if (IsA(node, A_Expr))
 	{
-		A_Expr *a_expr = (A_Expr *) node;
+		A_Expr	   *a_expr = (A_Expr *) node;
 
 		/*
 		 * Operators of other kinds (IN, LIKE, BETWEEN, NULLIF, ...) are
@@ -562,7 +563,7 @@ static void
 detect_unqualified_objects(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr)
 {
 	detect_unqualified_identifiers_walker_context context;
-	ListCell *lc;
+	ListCell   *lc;
 
 	if (cstate->pragma_vector.disable_extra_security_warnings ||
 		cstate->cinfo->extra_security_warnings_level == 0)
@@ -579,7 +580,7 @@ detect_unqualified_objects(PLpgSQL_checkstate *cstate, PLpgSQL_expr *expr)
 
 		if (cps->raw_parse_tree)
 		{
-			Node *parseTree = cps->raw_parse_tree->stmt;
+			Node	   *parseTree = cps->raw_parse_tree->stmt;
 
 			switch (nodeTag(parseTree))
 			{
@@ -1970,24 +1971,17 @@ free_string_constant(PLpgSQL_checkstate *cstate, PLpgSQL_row *row)
 	}
 }
 
-/*
- * Check expression as rvalue - on right in assign statement. It is used for
- * only expression check too - when target is unknown.
- *
- */
-void
-plpgsql_check_expr_as_rvalue_with_parser_setup(PLpgSQL_checkstate *cstate,
-											   PLpgSQL_expr *expr,
-											   PLpgSQL_rec *targetrec,
-											   PLpgSQL_row *targetrow,
-											   int targetdno,
-											   bool use_element_type,
-											   bool is_expression,
-											   ParserSetupHook parser_setup,
-											   void *arg)
+static void
+plpgsql_check_expr_as_rvalue_with_parser_setup_fatal(PLpgSQL_checkstate *cstate,
+													 PLpgSQL_expr *expr,
+													 PLpgSQL_rec *targetrec,
+													 PLpgSQL_row *targetrow,
+													 int targetdno,
+													 bool use_element_type,
+													 bool is_expression,
+													 ParserSetupHook parser_setup,
+													 void *arg)
 {
-	ResourceOwner oldowner;
-	MemoryContext oldCxt = CurrentMemoryContext;
 	TupleDesc	tupdesc;
 	bool		is_immutable_null;
 	volatile bool expand = true;
@@ -2041,10 +2035,6 @@ plpgsql_check_expr_as_rvalue_with_parser_setup(PLpgSQL_checkstate *cstate,
 			}
 		}
 	}
-
-	oldowner = CurrentResourceOwner;
-	BeginInternalSubTransaction(NULL);
-	MemoryContextSwitchTo(oldCxt);
 
 	PG_TRY();
 	{
@@ -2447,6 +2437,62 @@ no_other_check:
 
 		if (free_local_err_text)
 			pfree(local_err_text);
+	}
+	PG_CATCH();
+	{
+		expr->target_param = save_target_param;
+
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	expr->target_param = save_target_param;
+}
+
+/*
+ * Check expression as rvalue - on right in assign statement. It is used for
+ * only expression check too - when target is unknown.
+ *
+ */
+void
+plpgsql_check_expr_as_rvalue_with_parser_setup(PLpgSQL_checkstate *cstate,
+											   PLpgSQL_expr *expr,
+											   PLpgSQL_rec *targetrec,
+											   PLpgSQL_row *targetrow,
+											   int targetdno,
+											   bool use_element_type,
+											   bool is_expression,
+											   ParserSetupHook parser_setup,
+											   void *arg)
+{
+	ResourceOwner oldowner;
+	MemoryContext oldCxt = CurrentMemoryContext;
+
+	if (cstate->cinfo->fatal_errors)
+	{
+		/* without handling an exception inside subtransaction */
+		plpgsql_check_expr_as_rvalue_with_parser_setup_fatal(cstate, expr,
+															 targetrec, targetrow, targetdno,
+															 use_element_type, is_expression,
+															 parser_setup, arg);
+		return;
+	}
+
+	/*
+	 * This routine is used for almost all expressuins, and then the
+	 * performance is important. Start subtransaction only when fatal_errors
+	 * is false.
+	 */
+	oldowner = CurrentResourceOwner;
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(oldCxt);
+
+	PG_TRY();
+	{
+		plpgsql_check_expr_as_rvalue_with_parser_setup_fatal(cstate, expr,
+															 targetrec, targetrow, targetdno,
+															 use_element_type, is_expression,
+															 parser_setup, arg);
 
 		ReleaseCurrentSubTransaction();
 		MemoryContextSwitchTo(oldCxt);
@@ -2464,16 +2510,6 @@ no_other_check:
 		MemoryContextSwitchTo(oldCxt);
 		CurrentResourceOwner = oldowner;
 
-		expr->target_param = save_target_param;
-
-		/*
-		 * If fatal_errors is true, we just propagate the error up to the
-		 * highest level. Otherwise the error is appended to our current list
-		 * of errors, and we continue checking.
-		 */
-		if (cstate->cinfo->fatal_errors)
-			ReThrowError(edata);
-
 		Assert(cstate->last_expr == expr);
 		cstate->sqlerrcode = edata->sqlerrcode;
 
@@ -2483,8 +2519,6 @@ no_other_check:
 		MemoryContextSwitchTo(oldCxt);
 	}
 	PG_END_TRY();
-
-	expr->target_param = save_target_param;
 }
 
 void

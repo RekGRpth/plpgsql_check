@@ -25,10 +25,12 @@ enum
 	PLPGSQL_CHECK_WARNING_EXTRA,	/* check shadowed variables */
 	PLPGSQL_CHECK_WARNING_PERFORMANCE,	/* invisible cast check */
 	PLPGSQL_CHECK_WARNING_SECURITY, /* sql injection check */
-	PLPGSQL_CHECK_WARNING_COMPATIBILITY, /* obsolete setting of cursor's or
-										 * refcursor's variable */
-	PLPGSQL_CHECK_WARNING_EXTRA_SECURITY /* extra check like test of assigned search path
-										  * or searching unqualified identifiers */
+	PLPGSQL_CHECK_WARNING_COMPATIBILITY,	/* obsolete setting of cursor's or
+											 * refcursor's variable */
+	PLPGSQL_CHECK_WARNING_EXTRA_SECURITY	/* extra check like test of
+											 * assigned search path or
+											 * searching unqualified
+											 * identifiers */
 
 };
 
@@ -153,6 +155,14 @@ typedef struct plpgsql_check_pragma_vector
 
 #define CI_MAGIC		2023042922
 
+/*
+ * The result of the check of OPEN statement of a cursor variable
+ */
+typedef struct plch_cursorvar
+{
+	PLpgSQL_stmt_open *stmt_open;
+} plch_cursorvar;
+
 typedef struct PLpgSQL_checkstate
 {
 	int			ci_magic;
@@ -214,16 +224,14 @@ typedef struct PLpgSQL_checkstate
 	bool		is_dynsql;
 
 	/*
-	 * Holds a pointer to OPEN statement, that was used for specific dynamic
-	 * cursor. This allow to assign result type to target variable in FETCH
-	 * statement when referenced cursor is dynamic. When referenced cursor is
-	 * static, then all necessary info are in cursor variable.
+	 * Holds the result of the check of the OPEN statement of every cursor
+	 * variable (indexed by dno).
 	 */
-	PLpgSQL_stmt_open **dyn_stmt_open;
+	plch_cursorvar *cursorvars;
 
 	/*
-	 * These fields allow to detect some problems with planning. They are
-	 * used as protection aginst duplicate error messages.
+	 * These fields allow to detect some problems with planning. They are used
+	 * as protection aginst duplicate error messages.
 	 */
 	PLpgSQL_expr *last_expr;
 	bool		last_expr_plan_is_valid;
